@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>串口 HEX 工具</title>
+<style>
+:root{
+  --bg:#0f1419; --panel:#1a2332; --panel-2:#243044; --border:#2d3a4f;
+  --text:#e7ecf3; --muted:#8b9cb3; --accent:#3b82f6; --accent-soft:rgba(59,130,246,.18);
+  --ok:#22c55e; --warn:#fbbf24; --err:#ef4444;
+  --term-bg:#0b1220; --term-fg:#cbd5e1;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+  background:radial-gradient(ellipse at top,#1a2744 0%,var(--bg) 55%);
+  color:var(--text); min-height:100vh;
+}
+.wrap{max-width:1500px; margin:0 auto; padding:14px 16px 16px; display:flex; flex-direction:column; height:100vh; gap:10px}
+h1{margin:0; font-size:1.5rem}
+.sub{color:var(--muted); font-size:.85rem; line-height:1.4; margin:0}
+.sub code{background:var(--panel-2); padding:1px 5px; border-radius:4px; font-size:.82rem}
+/* shared controls */
+input,select,button,textarea{
+  background:var(--panel-2); color:var(--text);
+  border:1px solid var(--border); border-radius:8px;
+  padding:7px 11px; font:inherit; font-size:.88rem; outline:none;
+}
+input[type=text],input[type=number],textarea{cursor:text}
+button{cursor:pointer; transition:border-color .12s, background .12s}
+button:hover:not(:disabled){border-color:var(--accent)}
+button:disabled{opacity:.5; cursor:not-allowed}
+button.primary{background:var(--accent-soft); border-color:rgba(59,130,246,.45); color:#bfdbfe}
+button.primary:hover:not(:disabled){background:rgba(59,130,246,.3)}
+button.danger{color:#fca5a5; border-color:rgba(239,68,68,.35)}
+button.danger:hover:not(:disabled){background:rgba(239,68,68,.15); border-color:var(--err)}
+input[type=checkbox]{accent-color:var(--accent); width:15px; height:15px; vertical-align:middle; cursor:pointer}
+input[type=file]{display:none}
+select{cursor:pointer}
+
+/* panels */
+.panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px}
+.panel-title{font-size:.92rem; font-weight:600; margin:0 0 10px; display:flex; align-items:center; gap:8px}
+.row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+.field{display:flex; align-items:center; gap:6px}
+.field label{color:var(--muted); font-size:.85rem; white-space:nowrap}
+
+/* layout */
+.head-bar{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap}
+.head-bar h1{font-size:1.4rem}
+.conn-panel{padding:10px 14px}
+.conn-panel .row{gap:12px}
+.main-grid{display:grid; grid-template-columns: minmax(340px,1fr) minmax(340px,1.35fr); gap:10px; flex:1 1 0; min-height:0; margin:0; align-items:stretch}
+.grid-col{display:flex; flex-direction:column; min-height:0}
+/* 命令库/接收区面板：参与 flex 收缩，高度填满 main-grid 剩余空间 */
+.col-cmd .panel, .col-rx .panel{display:flex; flex-direction:column; min-height:0; padding:12px 14px}
+.grid-col .panel-title{margin-bottom:8px; flex:0 0 auto}
+.tx-panel{padding:10px 14px; flex:0 0 auto}
+.conn-status{flex:1; text-align:right; color:var(--muted); font-size:.85rem; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.conn-status .dot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; vertical-align:middle; background:#64748b}
+.conn-status.connected .dot{background:var(--ok); box-shadow:0 0 6px var(--ok)}
+
+/* command list（列表式：每行一条，HEX 紧贴含义）*/
+.cmd-toolbar{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; flex:0 0 auto}
+.search-box{flex:1; min-width:140px}
+.cmd-scroll{flex:1 1 0; min-height:0; overflow:auto; border:1px solid var(--border); border-radius:8px}
+.cmd-item{
+  display:block;
+  padding:4px 10px; cursor:pointer; border-bottom:1px solid rgba(45,58,79,.4);
+  font-size:.82rem; line-height:1.4;
+}
+.cmd-item:hover{background:rgba(59,130,246,.08)}
+.cmd-item.active{background:var(--accent-soft)}
+.cmd-item .hex{font-family:Consolas,"Cascadia Mono",monospace; color:#93c5fd; display:block; word-break:break-all}
+.cmd-item .meaning{color:var(--text); word-break:break-word; display:block; margin-top:1px}
+.cmd-foot{display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; flex:0 0 auto}
+.cmd-foot .count{color:var(--muted); font-size:.82rem}
+.empty-hint{padding:18px; text-align:center; color:var(--muted); font-size:.85rem}
+
+/* terminal (rx / tx) */
+.term-toolbar{display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px; flex:0 0 auto}
+.chk{display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:.83rem; cursor:pointer}
+.term{
+  background:var(--term-bg); color:var(--term-fg); border:1px solid var(--border); border-radius:8px;
+  padding:12px; white-space:pre-wrap; word-break:break-all; overflow:auto;
+  font:12.5px/1.6 Consolas,"Cascadia Mono","Courier New",monospace;
+}
+.term-rx{flex:1 1 0; min-height:0; overflow:auto}
+.term-rx .rxline{display:block}
+.term-rx .rxline.tx{color:#f87171}
+.term-rx .rxline.rx{color:#4ade80}
+.term-tx{width:100%; height:90px; resize:vertical; white-space:pre; color:var(--text)}
+.tx-current{color:var(--muted); font-size:.82rem; margin-bottom:6px}
+.tx-current b{color:var(--text); font-weight:600}
+.tx-actions{display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap}
+
+/* banner / toast */
+.banner{display:none; background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.4); color:#fde68a; border-radius:10px; padding:10px 14px; font-size:.85rem; margin-bottom:14px}
+.banner.show{display:block}
+.toast{position:fixed; left:50%; bottom:30px; transform:translateX(-50%); background:var(--panel); border:1px solid var(--border); color:var(--text); padding:10px 18px; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.5); font-size:.88rem; z-index:2000; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90vw}
+.toast.show{opacity:1}
+.toast.err{border-color:rgba(239,68,68,.5); color:#fca5a5}
+.toast.ok{border-color:rgba(34,197,94,.5); color:#86efac}
+
+/* modal */
+.modal-bg{position:fixed; inset:0; background:rgba(2,6,23,.72); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000}
+.modal-bg.open{display:flex}
+.modal{width:min(680px,96vw); background:var(--panel); border:1px solid var(--border); border-radius:14px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 24px 80px rgba(0,0,0,.45)}
+.modal-head{padding:14px 18px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center}
+.modal-head .t{font-weight:600}
+.modal-body{padding:16px 18px; display:flex; flex-direction:column; gap:10px}
+.modal-body textarea{width:100%; min-height:320px; resize:vertical; font:13px/1.5 Consolas,monospace}
+.modal-body .desc{color:var(--muted); font-size:.83rem}
+.modal-foot{padding:12px 18px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px}
+.modal-foot label{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:.83rem; margin-right:auto}
+.modal-foot input[type=text]{width:200px}
+.kbd{display:inline-block; padding:1px 6px; border:1px solid var(--border); border-bottom-width:2px; border-radius:4px; background:var(--panel-2); font:11px Consolas,monospace; color:var(--muted)}
+@media(max-width:880px){
+  .main-grid{grid-template-columns:1fr}
+  .main-grid{flex:none}
+  .grid-col .panel{min-height:260px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head-bar">
+    <h1>串口 HEX 工具</h1>
+    <p class="sub">导入固定格式命令表（<code>HEX | 含义</code>），点选组包发送；也支持手动输入 HEX。</p>
+  </div>
+
+  <div class="banner" id="noSerialBanner">
+    ⚠️ 当前浏览器不支持 <b>Web Serial API</b>，无法收发真实串口数据。请改用 <b>Chrome</b> 或 <b>Edge</b>，并通过 <code>http(s)://</code> 或 <code>localhost</code> 打开本页（不能直接双击文件打开）。命令库功能仍可使用。
+  </div>
+
+  <!-- 连接设置 -->
+  <div class="panel conn-panel">
+    <div class="row">
+      <div class="field">
+        <label for="portSelect">串口</label>
+        <select id="portSelect" style="min-width:200px"><option value="">点击「刷新」枚举已授权串口</option></select>
+        <button type="button" id="refreshBtn">刷新</button>
+      </div>
+      <div class="field">
+        <label for="baudSelect">波特率</label>
+        <select id="baudSelect">
+          <option>1200</option><option>2400</option><option>4800</option>
+          <option>9600</option><option>19200</option><option>38400</option>
+          <option>57600</option><option selected>115200</option><option>230400</option>
+          <option>460800</option><option>921600</option><option>1000000</option><option>2000000</option>
+        </select>
+      </div>
+      <button type="button" class="primary" id="connectBtn">打开串口</button>
+      <div class="conn-status" id="connStatus"><span class="dot"></span>未连接</div>
+    </div>
+  </div>
+
+  <!-- 命令库 + 接收区 -->
+  <div class="main-grid">
+    <!-- 命令库 -->
+    <div class="panel grid-col col-cmd">
+      <div class="panel-title">命令库</div>
+      <div class="cmd-toolbar">
+        <button type="button" id="importBtn">导入文件</button>
+        <button type="button" id="pasteBtn">粘贴导入</button>
+        <button type="button" id="exportBtn">导出</button>
+        <button type="button" class="danger" id="clearBtn">清空</button>
+        <input type="file" id="fileInput" accept=".txt,.csv,.log,text/plain">
+      </div>
+      <div class="cmd-toolbar">
+        <input type="text" class="search-box" id="searchInput" placeholder="搜索 HEX / 含义…（Ctrl+F）">
+      </div>
+      <div class="cmd-scroll" id="cmdList">
+        <div class="empty-hint">无命令。点击「导入文件」载入 commands.txt，或「粘贴导入」。</div>
+      </div>
+      <div class="cmd-foot">
+        <div class="count" id="cmdCount">0 条命令</div>
+        <div class="row" style="gap:8px">
+          <button type="button" id="fillBtn">填入发送区</button>
+          <button type="button" class="primary" id="sendSelBtn">直接发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 接收区 -->
+    <div class="panel grid-col col-rx">
+      <div class="panel-title">接收区</div>
+      <div class="term-toolbar">
+        <label class="chk"><input type="checkbox" id="rxHexChk" checked> HEX 显示</label>
+        <label class="chk"><input type="checkbox" id="rxAsciiChk"> ASCII 显示</label>
+        <label class="chk"><input type="checkbox" id="rxTsChk" checked> 时间戳</label>
+        <label class="chk"><input type="checkbox" id="rxPauseChk"> 暂停接收显示</label>
+        <div style="flex:1"></div>
+        <button type="button" id="exportLogBtn">导出日志</button>
+        <button type="button" id="clearRxBtn">清空接收</button>
+      </div>
+      <div class="term term-rx" id="rxTerm"></div>
+    </div>
+  </div>
+
+  <!-- 发送区 -->
+  <div class="panel tx-panel">
+    <div class="panel-title">发送区 (HEX)</div>
+    <div class="tx-current" id="txCurrent">当前命令: <b>手动输入</b></div>
+    <textarea class="term term-tx" id="txInput" spellcheck="false" placeholder="AA 55 01 00">AA 55 01 00</textarea>
+    <div class="tx-actions">
+      <button type="button" class="primary" id="sendBtn">发送 HEX</button>
+      <button type="button" id="clearTxBtn">清空发送</button>
+      <span style="flex:1"></span>
+      <span style="color:var(--muted); font-size:.8rem"><span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> 发送　<span class="kbd">Ctrl</span>+<span class="kbd">F</span> 搜索</span>
+    </div>
+  </div>
+</div>
+
+<!-- 粘贴导入模态框 -->
+<div class="modal-bg" id="pasteModal">
+  <div class="modal">
+    <div class="modal-head"><span class="t">粘贴导入命令表</span><button type="button" id="pasteCloseBtn">✕</button></div>
+    <div class="modal-body">
+      <div class="desc">粘贴整理好的命令表。每行格式: <code>HEX | 含义</code>（以 <code>#</code> 开头的行视为注释，空行忽略）。</div>
+      <textarea id="pasteText" spellcheck="false" placeholder="AA 55 01 00 | 查询设备状态&#10;55 AA 02 00 01 30 00 00 32 | 模块查询设备能力"></textarea>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="pasteCancelBtn">取消</button>
+      <button type="button" class="primary" id="pasteImportBtn">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- 导出模态框 -->
+<div class="modal-bg" id="exportModal">
+  <div class="modal">
+    <div class="modal-head"><span class="t">导出命令表</span><button type="button" id="exportCloseBtn">✕</button></div>
+    <div class="modal-body">
+      <label>标题（可选）: <input type="text" id="exportTitle" placeholder="例：科博达门锁华住串口协议V1.2"></label>
+      <textarea id="exportText" spellcheck="false" style="min-height:260px"></textarea>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="exportCancelBtn">取消</button>
+      <button type="button" class="primary" id="exportDownloadBtn">下载 .txt</button>
+      <button type="button" id="exportCopyBtn">复制到剪贴板</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   串口 HEX 工具 - Web 版
+   逻辑对齐串口 HEX 工具命令表规范
+   ============================================================ */
+
+/* ---------- 纯函数：HEX 规范化 / 解析（对齐 command_table.py） ---------- */
+const HEX_BYTE_RE = /^[0-9A-Fa-f]{1,2}$/;
+const FORMAT_VERSION = '1';
+
+// normalize_hex_text: 移除所有非 hex 字符 -> 偶数位校验 -> 每字节合法校验 -> 大写空格分隔
+function normalizeHexText(text){
+  const compact = (text.trim().replace(/[^0-9A-Fa-f]/g, ''));
+  if(!compact) throw new Error('HEX 不能为空');
+  if(compact.length % 2 === 1) throw new Error('HEX 字节不完整: ' + text.trim());
+  const tokens = [];
+  for(let i=0;i<compact.length;i+=2){
+    const tok = compact.slice(i,i+2);
+    if(!HEX_BYTE_RE.test(tok)) throw new Error('无效 HEX 字节: ' + tok);
+    tokens.push(tok.toUpperCase());
+  }
+  return tokens.join(' ');
+}
+// parse_hex_input: 规范化 -> 去空格 -> 转 bytes
+function parseHexInput(text){
+  return hexToBytes(normalizeHexText(text).replace(/ /g,''));
+}
+function hexToBytes(hex){
+  const out = new Uint8Array(hex.length/2);
+  for(let i=0;i<hex.length;i+=2) out[i/2] = parseInt(hex.slice(i,i+2),16);
+  return out;
+}
+// format_hex: bytes -> "AA 55 01 00"（大写两位，空格连接）
+function formatHex(data, sep=' '){
+  if(!data || data.length===0) return '';
+  const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const parts = new Array(arr.length);
+  for(let i=0;i<arr.length;i++) parts[i] = arr[i].toString(16).toUpperCase().padStart(2,'0');
+  return parts.join(sep);
+}
+// bytes -> ASCII 预览（可打印 32..126 原字符，否则 \xHH 大写）
+function bytesToAsciiPreview(data){
+  const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
+  let s = '';
+  for(let i=0;i<arr.length;i++){
+    const b = arr[i];
+    s += (b>=32 && b<=126) ? String.fromCharCode(b) : ('\\x'+b.toString(16).toUpperCase().padStart(2,'0'));
+  }
+  return s;
+}
+
+/* ---------- _split_row / parse_command_table（对齐 command_table.py） ---------- */
+function splitRow(line){
+  const stripped = line.trim();
+  if(!stripped || stripped.startsWith('#')) return null;
+  // 全管道表格行 | a | b | —— 表格行特殊分支
+  if(stripped.startsWith('|') && stripped.endsWith('|')){
+    const cells = stripped.replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim());
+    if(cells.length < 2) return null;
+    const headerLike = new Set(['','meaning','含义','命令','hex']);
+    const first2 = new Set(cells.slice(0,2).map(c=>c.replace(/-/g,'').replace(/:/g,'')));
+    let allHeader = true;
+    first2.forEach(v=>{ if(!headerLike.has(v)) allHeader=false; });
+    if(allHeader) return null;
+    return [cells[0], cells[1]];
+  }
+  // 单分隔符，优先级 | > \t > ,
+  if(stripped.indexOf('|')>=0){
+    const idx = stripped.indexOf('|');
+    return [stripped.slice(0,idx).trim(), stripped.slice(idx+1).trim()];
+  }
+  if(stripped.indexOf('\t')>=0){
+    const idx = stripped.indexOf('\t');
+    return [stripped.slice(0,idx).trim(), stripped.slice(idx+1).trim()];
+  }
+  if(stripped.indexOf(',')>=0){
+    const idx = stripped.indexOf(',');
+    return [stripped.slice(0,idx).trim(), stripped.slice(idx+1).trim()];
+  }
+  return null;
+}
+
+// 返回 {entries, errors}；entries 为 [{hexText, meaning}]；如无有效命令则 errors 含提示
+function parseCommandTable(text){
+  const entries = [], errors = [];
+  const lines = text.split(/\r?\n/);
+  lines.forEach((rawLine, i)=>{
+    const lineNo = i+1;
+    // 剥除行内 # 注释（line.split('#',1)[0].strip()）
+    let commentStripped = rawLine;
+    const hashIdx = rawLine.indexOf('#');
+    if(hashIdx>=0) commentStripped = rawLine.slice(0,hashIdx);
+    commentStripped = commentStripped.trim();
+    if(!commentStripped) return; // 注释行 / 空行跳过
+    const row = splitRow(commentStripped);
+    if(row === null){ errors.push('第 '+lineNo+' 行无法识别: '+rawLine.trim()); return; }
+    const [hexPart, meaning] = row;
+    if(!meaning){ errors.push('第 '+lineNo+' 行缺少含义: '+rawLine.trim()); return; }
+    let hexText;
+    try { hexText = normalizeHexText(hexPart); }
+    catch(e){ errors.push('第 '+lineNo+' 行 HEX 无效: '+e.message); return; }
+    entries.push({hexText:hexText, meaning:meaning.trim()});
+  });
+  return {entries, errors};
+}
+
+// format_command_table（导出格式）
+function formatCommandTable(entries, title){
+  const lines = ['# Serial Command Table v'+FORMAT_VERSION];
+  if(title && title.trim()) lines.push('# title: '+title.trim());
+  lines.push('# format: HEX | meaning');
+  lines.push('');
+  entries.forEach(e=>lines.push(e.hexText+' | '+e.meaning));
+  return lines.join('\n')+'\n';
+}
+
+/* ---------- 状态 ---------- */
+const state = {
+  port: null,           // SerialPort
+  reader: null,         // ReadableStreamDefaultReader
+  readerLoop: null,     // Promise/AbortController 感知
+  keepReading: false,
+  rxTotal: 0,
+  txTotal: 0,
+  connected: false,
+  baseStatus: '未连接',
+  selectedMeaning: '手动输入',
+  entries: [],          // 全部命令
+  filtered: [],         // 当前过滤后
+  activeIndex: -1,      // 当前选中（在 filtered 中）
+  paused: false,
+  trafficLog: [],       // 完整收发记录 {dir:'TX'|'RX', ts, hex, ascii, len}（不受"暂停显示"影响）
+};
+
+/* ---------- DOM ---------- */
+const $ = id => document.getElementById(id);
+const portSelect=$('portSelect'), baudSelect=$('baudSelect'), connectBtn=$('connectBtn'), refreshBtn=$('refreshBtn');
+const connStatus=$('connStatus');
+const cmdList=$('cmdList'), cmdCount=$('cmdCount'), searchInput=$('searchInput');
+const importBtn=$('importBtn'), pasteBtn=$('pasteBtn'), exportBtn=$('exportBtn'), clearBtn=$('clearBtn'), fileInput=$('fileInput');
+const fillBtn=$('fillBtn'), sendSelBtn=$('sendSelBtn');
+const rxTerm=$('rxTerm'), rxHexChk=$('rxHexChk'), rxAsciiChk=$('rxAsciiChk'), rxTsChk=$('rxTsChk'), rxPauseChk=$('rxPauseChk'), clearRxBtn=$('clearRxBtn'), exportLogBtn=$('exportLogBtn');
+const txInput=$('txInput'), txCurrent=$('txCurrent'), sendBtn=$('sendBtn'), clearTxBtn=$('clearTxBtn');
+const toastEl=$('toast');
+
+/* ---------- toast ---------- */
+let toastTimer=null;
+function toast(msg, type=''){
+  toastEl.textContent = msg;
+  toastEl.className = 'toast show '+type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ toastEl.className='toast '+type; }, 2600);
+}
+
+/* ---------- 兼容性检测 ---------- */
+const serialSupported = ('serial' in navigator);
+if(!serialSupported){ $('noSerialBanner').classList.add('show'); }
+
+/* ---------- 状态栏 ---------- */
+function updateCounters(){
+  connStatus.innerHTML = '<span class="dot"></span>'+state.baseStatus+' | RX: '+state.rxTotal+' bytes | TX: '+state.txTotal+' bytes';
+  connStatus.classList.toggle('connected', state.connected);
+}
+function setStatus(text){ state.baseStatus = text; updateCounters(); }
+
+/* ============================================================
+   命令库渲染
+   ============================================================ */
+function renderCommands(){
+  const q = searchInput.value.trim().toLowerCase();
+  state.filtered = q ? state.entries.filter(e=> e.hexText.toLowerCase().includes(q) || e.meaning.toLowerCase().includes(q)) : state.entries.slice();
+  state.activeIndex = -1;
+  if(state.filtered.length===0){
+    cmdList.innerHTML = '<div class="empty-hint">'+(state.entries.length===0?'无命令。点击「导入文件」载入 commands.txt，或「粘贴导入」。':'没有匹配「'+escapeHtml(q)+'」的命令。')+'</div>';
+  }else{
+    let html='';
+    state.filtered.forEach((e,idx)=>{
+      html += '<div class="cmd-item" data-i="'+idx+'">'
+            + '<span class="hex">'+escapeHtml(e.hexText)+'</span>'
+            + '<span class="meaning">'+escapeHtml(e.meaning)+'</span>'
+            + '</div>';
+    });
+    cmdList.innerHTML = html;
+  }
+  cmdCount.textContent = (q?('显示 '+state.filtered.length+'/'+state.entries.length):state.entries.length)+' 条命令';
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function selectedEntry(){
+  if(state.activeIndex<0 || state.activeIndex>=state.filtered.length) return null;
+  return state.filtered[state.activeIndex];
+}
+function setActive(idx){
+  state.activeIndex = idx;
+  cmdList.querySelectorAll('.cmd-item').forEach(it=>{
+    it.classList.toggle('active', Number(it.dataset.i)===idx);
+  });
+}
+
+cmdList.addEventListener('click', ev=>{
+  const it = ev.target.closest('.cmd-item[data-i]'); if(!it) return;
+  setActive(Number(it.dataset.i));
+});
+cmdList.addEventListener('dblclick', ev=>{   // 双击 -> 填入发送区（只填不发）
+  const it = ev.target.closest('.cmd-item[data-i]'); if(!it) return;
+  setActive(Number(it.dataset.i));
+  fillSelectedCommand();
+});
+
+/* ============================================================
+   填入 / 发送（对齐 serial_tool_gui.py 绑定）
+   ============================================================ */
+function fillSelectedCommand(){
+  const e = selectedEntry();
+  if(!e){ toast('请先在命令库中选择一条命令。'); return; }
+  txInput.value = e.hexText;
+  state.selectedMeaning = e.meaning;
+  txCurrent.innerHTML = '当前命令: <b>'+escapeHtml(e.meaning)+'</b>';
+}
+function sendSelectedCommand(){   // 直接发送 = 先填后发
+  fillSelectedCommand();
+  if(selectedEntry()) sendHex();
+}
+async function sendHex(){
+  if(!state.connected || !state.port){
+    toast('请先打开串口。','err'); return;
+  }
+  let payload;
+  try { payload = parseHexInput(txInput.value); }
+  catch(e){ toast('HEX 格式错误：'+e.message,'err'); return; }
+  try{
+    const writer = state.port.writable.getWriter();
+    try{ await writer.write(payload); }
+    finally{ writer.releaseLock(); }
+  }catch(err){
+    toast('发送失败：'+err.message,'err');
+    await disconnect(true);
+    return;
+  }
+  state.txTotal += payload.length;
+  appendTxLog(payload);
+  updateCounters();
+}
+function appendTxLog(payload){
+  // 写入完整收发日志（不受显示选项影响，含 HEX + ASCII）
+  logTraffic('TX', payload);
+  const showHex = rxHexChk.checked, showAscii = rxAsciiChk.checked, showTs = rxTsChk.checked;
+  const lines = [];
+  const prefix = showTs ? timestampPrefix() : '';
+  // 发送日志：TX 日志（HEX 为主）
+  lines.push(prefix+'TX HEX ('+formatHex(payload)+')');
+  rxTermAppend(lines.join('\n'), 'TX');
+}
+
+/* ============================================================
+   接收显示（对齐 _append_rx）
+   ============================================================ */
+function timestampPrefix(){
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
+  const ss = String(d.getSeconds()).padStart(2,'0');
+  const fff = String(d.getMilliseconds()).padStart(3,'0');
+  return '['+hh+':'+mm+':'+ss+'.'+fff+'] ';
+}
+function appendRx(data){
+  // 写入完整收发日志（不受显示选项影响，含 HEX + ASCII）
+  logTraffic('RX', data);
+  const showHex = rxHexChk.checked, showAscii = rxAsciiChk.checked, showTs = rxTsChk.checked;
+  const lines = [];
+  const prefix = showTs ? timestampPrefix() : '';
+  if(showHex) lines.push(prefix+'RX HEX: '+formatHex(data));
+  if(showAscii) lines.push(prefix+'RX ASCII: '+bytesToAsciiPreview(data));
+  if(lines.length===0) lines.push(prefix+'RX ('+data.length+' bytes)'); // 两者都关才显示字节数
+  rxTermAppend(lines.join('\n'), 'RX');
+}
+function rxTermAppend(text, dir){
+  const span=document.createElement('span');
+  span.className='rxline '+(dir==='TX'?'tx':'rx');
+  span.textContent=text+'\n';
+  rxTerm.appendChild(span);
+  rxTerm.scrollTop = rxTerm.scrollHeight;
+}
+
+/* ---------- 完整收发日志（打印所有 TX/RX） ---------- */
+// 无论显示选项如何（含"暂停接收显示"），实际收发的数据都完整留存
+function logTraffic(dir, data){
+  const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
+  state.trafficLog.push({
+    dir: dir,                         // 'TX' | 'RX'
+    ts: new Date(),                   // 时间戳
+    hex: formatHex(arr),              // "AA 55 01 00"
+    ascii: bytesToAsciiPreview(arr),  // "A\x0D..."
+    len: arr.length,
+  });
+}
+// 把完整收发日志格式化为文本（带表头 + 收发统计）
+function buildTrafficLogText(){
+  const L = state.trafficLog;
+  const txCount = L.filter(r=>r.dir==='TX').length;
+  const rxCount = L.filter(r=>r.dir==='RX').length;
+  const txBytes = L.filter(r=>r.dir==='TX').reduce((s,r)=>s+r.len,0);
+  const rxBytes = L.filter(r=>r.dir==='RX').reduce((s,r)=>s+r.len,0);
+  const pad = s=>String(s).padStart(2,'0');
+  const ts = r=>{ const d=r.ts; return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())+'.'+String(d.getMilliseconds()).padStart(3,'0'); };
+  const out = [];
+  out.push('# 串口 HEX 工具 - 收发日志');
+  out.push('# 导出时间: '+new Date().toLocaleString());
+  out.push('# 连接: '+state.baseStatus);
+  out.push('# TX '+txCount+' 包 / '+txBytes+' 字节    RX '+rxCount+' 包 / '+rxBytes+' 字节    共 '+L.length+' 条');
+  out.push('# 列: [时间戳] 方向 HEX');
+  out.push('');
+  L.forEach(r=>{
+    out.push('['+ts(r)+'] '+(r.dir==='TX'?'TX >>':'RX <<')+' '+r.hex);
+  });
+  return out.join('\n')+'\n';
+}
+function exportTrafficLog(){
+  if(state.trafficLog.length===0){ toast('暂无收发记录。','err'); return; }
+  const text = buildTrafficLogText();
+  const txBytes = state.trafficLog.filter(r=>r.dir==='TX').reduce((s,r)=>s+r.len,0);
+  const rxBytes = state.trafficLog.filter(r=>r.dir==='RX').reduce((s,r)=>s+r.len,0);
+  const blob = new Blob([text], {type:'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  const stamp = d.getFullYear()+pad2(d.getMonth()+1)+pad2(d.getDate())+'_'+pad2(d.getHours())+pad2(d.getMinutes())+pad2(d.getSeconds());
+  a.download = 'serial_log_'+stamp+'.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  toast('已导出 '+state.trafficLog.length+' 条收发记录（TX '+txBytes+'B / RX '+rxBytes+'B）。','ok');
+}
+function pad2(s){ return String(s).padStart(2,'0'); }
+
+/* ============================================================
+   Web Serial 连接 / 收 / 断开
+   ============================================================ */
+async function refreshPorts(){
+  if(!serialSupported) return;
+  // 枚举已授权过的端口（首次需点「打开串口」触发系统选择）
+  const ports = await navigator.serial.getPorts();
+  portSelect.innerHTML = ports.length
+    ? ports.map((p,i)=>'<option value="'+i+'">'+serialPortName(p,i)+'</option>').join('')
+    : '<option value="">无已授权串口，点「打开串口」选择</option>';
+}
+function serialPortName(p, i){
+  // Web Serial 没有稳定 COM 名，尽量展示 usb/serial 信息
+  const info = p.getInfo();
+  const usb  = info.usbVendorId ? ('USB '+info.usbVendorId.toString(16).padStart(4,'0')+':'+(info.usbProductId?info.usbProductId.toString(16).padStart(4,'0'):'?')) : '';
+  return '串口 #'+(i+1)+(usb?(' ('+usb+')'):'');
+}
+function selectedBaud(){
+  const v = baudSelect.value.trim();
+  if(!/^\d+$/.test(v)) throw new Error('波特率必须是正整数');
+  const baud = parseInt(v,10);
+  if(baud<=0) throw new Error('波特率必须大于 0');
+  return baud;
+}
+
+async function connect(){
+  if(!serialSupported){ toast('当前浏览器不支持 Web Serial，请用 Chrome/Edge。','err'); return; }
+  let port;
+  const sel = portSelect.value;
+  const ports = await navigator.serial.getPorts();
+  if(sel!=='' && ports[Number(sel)]){
+    port = ports[Number(sel)];
+  }else{
+    try{ port = await navigator.serial.requestPort(); }
+    catch(e){ /* 用户取消 */ return; }
+  }
+  let baud;
+  try{ baud = selectedBaud(); }
+  catch(e){ toast(e.message,'err'); return; }
+  try{
+    // 8N1 是 Web Serial 默认；显式设置
+    await port.open({ baudRate: baud, dataBits:8, parity:'none', stopBits:1 });
+  }catch(err){
+    toast('打开失败：'+err.message,'err'); return;
+  }
+  state.port = port;
+  state.connected = true;
+  state.keepReading = true;
+  // UI
+  connectBtn.textContent = '关闭串口';
+  connectBtn.classList.remove('primary');
+  portSelect.disabled = baudSelect.disabled = refreshBtn.disabled = true;
+  setStatus('已连接 '+serialPortName(port, ports.indexOf(port))+' @ '+baud);
+  startReader();
+}
+async function startReader(){
+  while(state.port && state.port.readable && state.keepReading){
+    state.reader = state.port.readable.getReader();
+    try{
+      while(true){
+        const {value, done} = await state.reader.read();
+        if(done) break;
+        if(value && value.length){
+          state.rxTotal += value.length;
+          updateCounters();
+          if(!rxPauseChk.checked) appendRx(value);
+        }
+      }
+    }catch(err){
+      // 读取异常（如断开）
+      if(state.keepReading){
+        toast('串口读取失败，连接已关闭。','err');
+      }
+      break;
+    }finally{
+      try{ state.reader.releaseLock(); }catch(e){}
+    }
+    // readable 可能被重置，外层 while 会在仍可读时继续
+    if(!state.keepReading) break;
+  }
+  await disconnect(true);
+}
+async function disconnect(silent){
+  if(!state.port){ return; }
+  state.keepReading = false;
+  try{ if(state.reader){ await state.reader.cancel(); } }catch(e){}
+  try{ if(state.reader){ state.reader.releaseLock(); } }catch(e){}
+  try{ await state.port.close(); }catch(e){}
+  state.port = null; state.reader = null; state.connected = false;
+  connectBtn.textContent = '打开串口';
+  connectBtn.classList.add('primary');
+  portSelect.disabled = baudSelect.disabled = refreshBtn.disabled = false;
+  setStatus('未连接');
+  refreshPorts();
+}
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+connectBtn.addEventListener('click', ()=>{ state.connected ? disconnect(false) : connect(); });
+refreshBtn.addEventListener('click', refreshPorts);
+searchInput.addEventListener('input', renderCommands);
+importBtn.addEventListener('click', ()=>fileInput.click());
+fileInput.addEventListener('change', handleFileImport);
+pasteBtn.addEventListener('click', openPasteModal);
+exportBtn.addEventListener('click', openExportModal);
+clearBtn.addEventListener('click', ()=>{
+  if(state.entries.length===0){ toast('命令库为空。'); return; }
+  if(confirm('清空命令库？')){
+    state.entries=[]; renderCommands();
+  }
+});
+fillBtn.addEventListener('click', fillSelectedCommand);
+sendSelBtn.addEventListener('click', sendSelectedCommand);
+sendBtn.addEventListener('click', sendHex);
+clearTxBtn.addEventListener('click', ()=>{
+  txInput.value=''; state.selectedMeaning='手动输入';
+  txCurrent.innerHTML='当前命令: <b>手动输入</b>';
+});
+clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; toast('已清空接收区与收发日志。'); });
+exportLogBtn.addEventListener('click', exportTrafficLog);
+rxPauseChk.addEventListener('change', ()=>{ state.paused = rxPauseChk.checked; });
+
+// Ctrl+Enter 发送，Ctrl+F 搜索（全局）
+document.addEventListener('keydown', ev=>{
+  if(ev.ctrlKey && ev.key==='Enter'){ ev.preventDefault(); sendHex(); }
+  else if(ev.ctrlKey && (ev.key==='f'||ev.key==='F')){ ev.preventDefault(); searchInput.focus(); searchInput.select(); }
+});
+
+/* ---------- 文件导入 ---------- */
+function handleFileImport(ev){
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = ''; // 允许重复选同一文件
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    applyImport(reader.result);
+  };
+  reader.onerror = ()=>toast('读取文件失败。','err');
+  reader.readAsText(file, 'utf-8');
+}
+function applyImport(text){
+  const {entries, errors} = parseCommandTable(text);
+  if(entries.length===0){
+    const msg = errors.length ? ('导入失败：\n'+errors.slice(0,8).join('\n')) : '未解析到有效命令，请检查格式是否为: HEX | 含义';
+    toast(msg,'err'); return;
+  }
+  state.entries = entries;
+  renderCommands();
+  let msg = '已导入 '+entries.length+' 条命令。';
+  if(errors.length) msg += '（另有 '+errors.length+' 行被跳过）';
+  toast(msg,'ok');
+  if(errors.length) console.log('[命令表导入] 被跳过的行：\n'+errors.join('\n'));
+}
+
+/* ---------- 粘贴导入模态框 ---------- */
+const pasteModal=$('pasteModal'), pasteText=$('pasteText');
+function openPasteModal(){ pasteText.value=''; pasteModal.classList.add('open'); setTimeout(()=>pasteText.focus(),50); }
+function closePasteModal(){ pasteModal.classList.remove('open'); }
+$('pasteCloseBtn').addEventListener('click', closePasteModal);
+$('pasteCancelBtn').addEventListener('click', closePasteModal);
+$('pasteImportBtn').addEventListener('click', ()=>{
+  if(!pasteText.value.trim()){ toast('请先粘贴命令表内容。','err'); return; }
+  applyImport(pasteText.value);
+  closePasteModal();
+});
+pasteModal.addEventListener('click', e=>{ if(e.target===pasteModal) closePasteModal(); });
+
+/* ---------- 导出模态框 ---------- */
+const exportModal=$('exportModal'), exportTitle=$('exportTitle'), exportText=$('exportText');
+function openExportModal(){
+  if(state.entries.length===0){ toast('命令库为空，无可导出内容。'); return; }
+  exportTitle.value='';
+  exportText.value = formatCommandTable(state.entries, '');
+  exportModal.classList.add('open');
+}
+function closeExportModal(){ exportModal.classList.remove('open'); }
+function refreshExportText(){ exportText.value = formatCommandTable(state.entries, exportTitle.value); }
+$('exportCloseBtn').addEventListener('click', closeExportModal);
+$('exportCancelBtn').addEventListener('click', closeExportModal);
+exportTitle.addEventListener('input', refreshExportText);
+$('exportDownloadBtn').addEventListener('click', ()=>{
+  refreshExportText();
+  const blob = new Blob([exportText.value], {type:'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (exportTitle.value.trim()||'commands')+'.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  toast('已导出到文件。','ok');
+});
+$('exportCopyBtn').addEventListener('click', async ()=>{
+  refreshExportText();
+  try{ await navigator.clipboard.writeText(exportText.value); toast('已复制到剪贴板。','ok'); }
+  catch(e){ exportText.select(); toast('复制失败，请手动选择文本复制。','err'); }
+});
+exportModal.addEventListener('click', e=>{ if(e.target===exportModal) closeExportModal(); });
+
+/* ---------- 初始化 ---------- */
+async function init(){
+  updateCounters();
+  renderCommands();
+  if(serialSupported) refreshPorts();
+}
+init();
+
+/* 页面关闭时尝试释放串口 */
+window.addEventListener('beforeunload', ()=>{
+  if(state.port && state.connected){ try{ disconnect(true); }catch(e){} }
+});
+</script>
+</body>
+</html>
