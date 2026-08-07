@@ -167,6 +167,7 @@ select{cursor:pointer}
         <button type="button" id="pasteBtn">粘贴导入</button>
         <button type="button" id="exportBtn">导出</button>
         <button type="button" class="danger" id="clearBtn">清空</button>
+        <button type="button" id="skillBtn" title="下载 AI 组包 skill（SKILL.md），装到 AI 助手后可按本工具格式生成 commands.txt">下载组包 Skill</button>
         <input type="file" id="fileInput" accept=".txt,.csv,.log,text/plain">
       </div>
       <div class="cmd-toolbar">
@@ -330,12 +331,22 @@ function splitRow(line){
   return null;
 }
 
-// 返回 {entries, errors}；entries 为 [{hexText, meaning}]；如无有效命令则 errors 含提示
+// 返回 {entries, errors, baud}；entries 为 [{hexText, meaning}]；baud 为命令表声明的波特率（无则 null）
+// meta 声明行（# baud: 9600 之类）在剥注释前先提取，不当作命令行解析
 function parseCommandTable(text){
   const entries = [], errors = [];
+  let baud = null;
   const lines = text.split(/\r?\n/);
   lines.forEach((rawLine, i)=>{
     const lineNo = i+1;
+    // 先识别 meta 声明行：# baud: 9600 / # baudrate: 9600 / # port: 9600 8N1
+    // 必须在剥 # 注释之前做，否则这些行会被当注释丢掉
+    const metaMatch = rawLine.match(/^\s*#\s*(baud|baudrate|port)\s*[:：]\s*([\d]+)/i);
+    if(metaMatch){
+      const num = parseInt(metaMatch[2], 10);
+      if(num > 0 && baud === null) baud = num; // 取第一个有效值，后续忽略
+      return;
+    }
     // 剥除行内 # 注释（line.split('#',1)[0].strip()）
     let commentStripped = rawLine;
     const hashIdx = rawLine.indexOf('#');
@@ -351,7 +362,7 @@ function parseCommandTable(text){
     catch(e){ errors.push('第 '+lineNo+' 行 HEX 无效: '+e.message); return; }
     entries.push({hexText:hexText, meaning:meaning.trim()});
   });
-  return {entries, errors};
+  return {entries, errors, baud};
 }
 
 // format_command_table（导出格式）
@@ -380,6 +391,7 @@ const state = {
   activeIndex: -1,      // 当前选中（在 filtered 中）
   paused: false,
   trafficLog: [],       // 完整收发记录 {dir:'TX'|'RX', ts, hex, ascii, len}（不受"暂停显示"影响）
+  rxFrameBuf: [],       // RX 组帧缓冲：跨 chunk 拼完整 AA55 帧，避免一帧被拆成多行显示
 };
 
 /* ---------- DOM ---------- */
@@ -387,7 +399,7 @@ const $ = id => document.getElementById(id);
 const portSelect=$('portSelect'), baudSelect=$('baudSelect'), connectBtn=$('connectBtn'), refreshBtn=$('refreshBtn');
 const connStatus=$('connStatus');
 const cmdList=$('cmdList'), cmdCount=$('cmdCount'), searchInput=$('searchInput');
-const importBtn=$('importBtn'), pasteBtn=$('pasteBtn'), exportBtn=$('exportBtn'), clearBtn=$('clearBtn'), fileInput=$('fileInput');
+const importBtn=$('importBtn'), pasteBtn=$('pasteBtn'), exportBtn=$('exportBtn'), clearBtn=$('clearBtn'), fileInput=$('fileInput'), skillBtn=$('skillBtn');
 const fillBtn=$('fillBtn'), sendSelBtn=$('sendSelBtn');
 const rxTerm=$('rxTerm'), rxHexChk=$('rxHexChk'), rxAsciiChk=$('rxAsciiChk'), rxTsChk=$('rxTsChk'), rxPauseChk=$('rxPauseChk'), clearRxBtn=$('clearRxBtn'), exportLogBtn=$('exportLogBtn');
 const txInput=$('txInput'), txCurrent=$('txCurrent'), sendBtn=$('sendBtn'), clearTxBtn=$('clearTxBtn');
@@ -498,7 +510,7 @@ function appendTxLog(payload){
   const lines = [];
   const prefix = showTs ? timestampPrefix() : '';
   // 发送日志：TX 日志（HEX 为主）
-  lines.push(prefix+'TX HEX ('+formatHex(payload)+')');
+  lines.push(prefix+'TX HEX: '+formatHex(payload));
   rxTermAppend(lines.join('\n'), 'TX');
 }
 
@@ -514,14 +526,68 @@ function timestampPrefix(){
   return '['+hh+':'+mm+':'+ss+'.'+fff+'] ';
 }
 function appendRx(data){
-  // 写入完整收发日志（不受显示选项影响，含 HEX + ASCII）
-  logTraffic('RX', data);
+  // 组帧缓冲：把 chunk 追加进 rxFrameBuf，按 AA55 协议帧（帧头 + 单字节长度）
+  // 拼出完整帧再显示。避免硬件把一帧拆成多批到达时被显示成多行。
+  // data 可能是 Uint8Array 或 ArrayBuffer。
+  const chunk = data instanceof Uint8Array ? data : new Uint8Array(data);
+  for(let i=0;i<chunk.length;i++) state.rxFrameBuf.push(chunk[i]);
+
+  // 尝试从缓冲区拼出尽可能多的完整帧
+  let consumed = 0;
+  while(consumed < state.rxFrameBuf.length){
+    const buf = state.rxFrameBuf;
+    // 找下一个 AA 55 帧头（从 consumed 起）。注意循环上界用 buf.length-1，
+    // 因为要检查 buf[i+1]。所以末尾单独一个 AA（可能是未齐的帧头）这里查不到。
+    let headIdx = -1;
+    for(let i=consumed;i<buf.length-1;i++){
+      if(buf[i]===0xAA && buf[i+1]===0x55){ headIdx = i; break; }
+    }
+    if(headIdx === -1){
+      // 没找到完整 AA 55 帧头。但要小心：缓冲区末尾若是单独的 AA，
+      // 它很可能是下一帧帧头的前半（下一字节可能是 55），必须保留等下次 chunk。
+      // 只有末尾是 AA 时：把它之前的字节当杂散吐掉，AA 留在缓冲。
+      if(buf.length >= 1 && buf[buf.length-1] === 0xAA){
+        const loose = buf.slice(consumed, buf.length-1);
+        if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
+        state.rxFrameBuf = [0xAA];
+        return;
+      }
+      // 末尾不是 AA：剩余全部当裸数据吐掉，清空缓冲
+      const loose = buf.slice(consumed);
+      if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
+      state.rxFrameBuf = [];
+      return;
+    }
+    if(headIdx > consumed){
+      // 帧头前有杂散字节，先当裸数据吐掉
+      const loose = buf.slice(consumed, headIdx);
+      if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
+      consumed = headIdx;
+    }
+    // 此时 consumed 指向 AA。需要至少 3 字节才能读长度（AA 55 LEN）
+    if(buf.length - consumed < 3) break; // 等下次 chunk
+    const len = buf[consumed+2]; // 数据长度字段（除包头和校验外的字节数）
+    // 本协议：完整帧 = 2(包头) + len(数据) + 1(校验)
+    const frameLen = 2 + len + 1;
+    if(buf.length - consumed < frameLen) break; // 帧未收全，等下次 chunk
+    // 凑齐一帧
+    const frame = buf.slice(consumed, consumed + frameLen);
+    logTraffic('RX', frame);
+    renderRxFrame(frame);
+    consumed += frameLen;
+  }
+  // 丢掉已消费部分，保留残包
+  if(consumed > 0) state.rxFrameBuf = state.rxFrameBuf.slice(consumed);
+}
+function renderRxFrame(data){
+  // 把一帧（或裸数据）渲染到接收区。data: number[] 或 Uint8Array
+  const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
   const showHex = rxHexChk.checked, showAscii = rxAsciiChk.checked, showTs = rxTsChk.checked;
   const lines = [];
   const prefix = showTs ? timestampPrefix() : '';
-  if(showHex) lines.push(prefix+'RX HEX: '+formatHex(data));
-  if(showAscii) lines.push(prefix+'RX ASCII: '+bytesToAsciiPreview(data));
-  if(lines.length===0) lines.push(prefix+'RX ('+data.length+' bytes)'); // 两者都关才显示字节数
+  if(showHex) lines.push(prefix+'RX HEX: '+formatHex(arr));
+  if(showAscii) lines.push(prefix+'RX ASCII: '+bytesToAsciiPreview(arr));
+  if(lines.length===0) lines.push(prefix+'RX: '+arr.length+' bytes'); // 两者都关才显示字节数
   rxTermAppend(lines.join('\n'), 'RX');
 }
 function rxTermAppend(text, dir){
@@ -671,6 +737,7 @@ async function disconnect(silent){
   try{ if(state.reader){ state.reader.releaseLock(); } }catch(e){}
   try{ await state.port.close(); }catch(e){}
   state.port = null; state.reader = null; state.connected = false;
+  state.rxFrameBuf = []; // 断开时清空组帧缓冲，避免残留半帧污染下次连接
   connectBtn.textContent = '打开串口';
   connectBtn.classList.add('primary');
   portSelect.disabled = baudSelect.disabled = refreshBtn.disabled = false;
@@ -688,6 +755,136 @@ importBtn.addEventListener('click', ()=>fileInput.click());
 fileInput.addEventListener('change', handleFileImport);
 pasteBtn.addEventListener('click', openPasteModal);
 exportBtn.addEventListener('click', openExportModal);
+skillBtn.addEventListener('click', downloadSkill);
+// 组包 Skill 全文（内嵌，下载按钮直接吐这个内容；不依赖外部文件，file:// 也能用）
+const SKILL_MD = `---
+name: serial-cmd-pack
+description: 为串口 HEX 工具网页（hex-serial-tool-web）生成 commands.txt 命令表。当用户提到"组包""生成命令表""做个 commands.txt""把协议转成可点选的 HEX 命令""串口命令组包"，或给出串口/模组协议文档（含帧格式、FuncID、校验方式）要求转成工具能导入的格式时立即触发。输出符合 hex-serial-tool-web 工具的 HEX | meaning 文本格式，导入后在网页命令库显示为可点选的 HEX 命令。
+---
+
+# 串口命令组包（commands.txt 生成器）
+
+把用户给的串口协议文档/描述，转换成 hex-serial-tool-web 工具能导入的命令表文件（commands.txt）。导入后网页命令库会显示成可点选的命令列表，点一下就发送 HEX。
+
+## 目标工具的格式规范（必须严格遵守）
+
+工具用一种简单的文本格式描述命令表。生成的内容必须能被工具的 parseCommandTable 正确解析，否则导入失败。
+
+### 文件整体结构
+
+    # Serial Command Table v1
+    # title: <标题，如 科博达门锁华住串口协议V1.2>
+    # source: <可选，协议文档来源>
+    # format: HEX | meaning
+    # baud: <可选，波特率整数，如 9600。网站导入时会自动切换波特率下拉框>
+    # checksum: <可选，校验算法说明，如 xor>
+    # note: <可选，备注，如 校验规则/未启用项>
+    <空行>
+    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
+    AA 55 10 00 13 01 09 25 01 8B 01 07 DE 01 01 01 01 01 95 | [MCU回复] 回复当前时钟
+
+### 各部分规则
+
+1. 第 1 行（固定）：# Serial Command Table v1 —— 版本号，工具靠它识别。不能改。
+2. # title: 命令表标题，建议写「设备名 + 协议版本」。
+3. # source:（可选）协议文档来源。
+4. # format:（固定）HEX | meaning —— 声明每行格式。不能改。
+5. # baud:（可选但强烈建议）：波特率整数，如 # baud: 9600。网站导入命令表时会自动读取这个值，切换波特率下拉框（8N1 固定，不需要声明）。协议文档里的波特率务必写进这里，而不是只写在 note 里——只有 # baud: 这一行会被网站自动应用，note 里的文字网站不解析。
+6. # checksum:（可选）校验算法说明，写人话（如 xor、累加和取低字节）。工具不解析它，仅供人读。
+7. # note:（可选）备注。校验规则/未启用项/拼包说明放这里（波特率请优先用 # baud: 声明）。
+7. 空行：标题块和命令行之间留一个空行。
+8. 命令行：<HEX 字节> | <含义>
+
+### 命令行格式（核心）
+
+    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
+
+- HEX 部分：字节用空格分隔，每个字节 2 位十六进制（AA、55、09…）。大小写不限（工具会规范化为大写）。只能含 0-9 A-F 和空格。
+- 分隔符： | （竖线两侧各一个空格）。
+- 含义部分：人话描述。建议带方向前缀，如 [模组下发]、[MCU回复]、[MCU主动上报]、[链路应答]。
+- # 注释：行内可用 # 加注释，# 之后的内容会被忽略。
+
+### 解析规则（生成时必须满足）
+
+- 以 # 开头的行 = 标题/声明行。
+- 空行跳过。
+- 其余每行必须能拆出 [HEX, 含义] 两部分：HEX 必须有效（只含十六进制和空格），含义不能为空。
+
+## 组包（拼帧）规则
+
+常见帧结构：
+
+    帧头    长度    FuncID/方向    数据      校验
+    AA 55   09      04             01 02...  5C
+
+### 典型字段
+
+- 帧头：AA 55（两字节魔数，标记一帧开始）。
+- 长度：从本字节下一字节到校验前一字节的总字节数。具体定义看协议文档（有的含校验，有的不含）。
+- FuncID/方向：标识这帧是谁发给谁。如 04=模组下发、13=MCU 回复、F1=MCU 主动上报。
+- 数据：按协议字段表填，多字段顺序拼接。
+- 校验：最常见两种——XOR（帧内除校验字节外全部异或）或 累加和（全部相加取低 8 位）。
+
+### 校验必须验算
+
+生成的每一帧都要验算校验位，并在 # note: 里写明校验方式。文档有示例帧的优先用文档；没示例的按字段表拼包后务必算校验。
+
+XOR 验算示例（科博达门锁"读取当前时钟"）：
+帧：AA 55 09 00 04 01 02 25 01 8B 02 [校验]
+XOR = AA^55^09^00^04^01^02^25^01^8B^02 = 5C
+最终：AA 55 09 00 04 01 02 25 01 8B 02 5C
+
+## 工作流
+
+1. 读协议：用户给协议文档或口述帧结构。提取帧头、长度定义、方向/FuncID、字段表、校验算法、波特率。
+2. 列命令清单：把协议里所有命令列出来，每条确定方向。
+3. 拼帧 + 算校验：逐条按字段表拼字节，算校验位。每条都要验算。
+4. 生成 commands.txt：按格式规范输出完整文件。
+5. 交付：把 commands.txt 内容给用户，告诉他导入到 hex-serial-tool-web 工具的命令库（点「导入文件」或「粘贴导入」）。
+
+## 生成示例
+
+输入：科博达门锁华住串口协议 V1.2（9600 8N1，XOR 校验）
+
+输出 commands.txt：
+
+    # Serial Command Table v1
+    # title: 科博达门锁华住串口协议V1.2
+    # source: 华住 门锁与无线模组串口协议V1.2.docx
+    # format: HEX | meaning
+    # baud: 9600
+    # checksum: xor
+    # note: 校验为帧内除校验字节外全部异或
+
+    06 | [链路应答] ACK 校验通过
+    15 | [链路应答] NAK 校验失败
+    18 | [链路应答] CAN 接收方正等待上一包应答
+    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
+    AA 55 10 00 04 01 09 25 01 8B 01 07 DE 01 01 01 01 01 95 | [模组下发] 设置时钟2014-01-01 01:01:01
+    AA 55 12 00 13 01 09 25 01 8B 03 07 DE 01 01 01 01 01 01 01 82 | [MCU回复] 回复当前时钟
+
+## 注意事项
+
+- 校验是命门：校验位算错，设备不响应或报 NAK。
+- 方向前缀：含义里带 [模组下发]/[MCU回复] 等，便于筛选辨识。
+- 字节序：多字节字段注意大端/小端。
+- 文档没示例的帧：按字段表拼包后，在含义里标注「（按字段表拼包）」。
+
+## 目标工具位置
+
+- 网页工具：hex-serial-tool-web（串口 HEX 工具）
+- 导入方式：网页「命令库」面板 → 点「导入文件」选 commands.txt，或「粘贴导入」贴文本。
+`;
+// 纯前端下载：从内存 Blob 生成文件，不 fetch 任何外部资源。
+function downloadSkill(){
+  const blob = new Blob([SKILL_MD], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'serial-cmd-pack.SKILL.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('已下载组包 Skill（serial-cmd-pack.SKILL.md）');
+}
 clearBtn.addEventListener('click', ()=>{
   if(state.entries.length===0){ toast('命令库为空。'); return; }
   if(confirm('清空命令库？')){
@@ -701,7 +898,7 @@ clearTxBtn.addEventListener('click', ()=>{
   txInput.value=''; state.selectedMeaning='手动输入';
   txCurrent.innerHTML='当前命令: <b>手动输入</b>';
 });
-clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; toast('已清空接收区与收发日志。'); });
+clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; state.rxFrameBuf=[]; toast('已清空接收区与收发日志。'); });
 exportLogBtn.addEventListener('click', exportTrafficLog);
 rxPauseChk.addEventListener('change', ()=>{ state.paused = rxPauseChk.checked; });
 
@@ -724,14 +921,29 @@ function handleFileImport(ev){
   reader.readAsText(file, 'utf-8');
 }
 function applyImport(text){
-  const {entries, errors} = parseCommandTable(text);
+  const {entries, errors, baud} = parseCommandTable(text);
   if(entries.length===0){
     const msg = errors.length ? ('导入失败：\n'+errors.slice(0,8).join('\n')) : '未解析到有效命令，请检查格式是否为: HEX | 含义';
     toast(msg,'err'); return;
   }
   state.entries = entries;
   renderCommands();
+  // 命令表声明了波特率 → 自动切换下拉框（已连接时不改，避免冲突）
   let msg = '已导入 '+entries.length+' 条命令。';
+  if(baud){
+    const opt = Array.from(baudSelect.options).find(o => Number(o.value) === baud);
+    if(opt){
+      baudSelect.value = baud;
+      msg += ' 波特率已设为 '+baud+'。';
+    }else{
+      // 下拉里没有这个波特率，临时加一个 option
+      const o = document.createElement('option');
+      o.value = baud; o.textContent = baud+' (命令表)';
+      baudSelect.appendChild(o);
+      baudSelect.value = baud;
+      msg += ' 波特率已设为 '+baud+'（新增选项）。';
+    }
+  }
   if(errors.length) msg += '（另有 '+errors.length+' 行被跳过）';
   toast(msg,'ok');
   if(errors.length) console.log('[命令表导入] 被跳过的行：\n'+errors.join('\n'));
