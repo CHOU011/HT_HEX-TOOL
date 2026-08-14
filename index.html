@@ -1,150 +1,268 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>串口 HEX 工具</title>
+<script>
+  // 主题早加载：与波特律动串口助手一致，尊重 localStorage 或系统偏好，默认深色
+  ;(() => {
+    try {
+      const saved = localStorage.getItem('serial-theme') || 'auto';
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const dark = saved === 'dark' || (saved === 'auto' && (prefersDark === undefined ? true : prefersDark));
+      document.documentElement.classList.toggle('dark', dark);
+    } catch (_) { document.documentElement.classList.add('dark'); }
+  })();
+</script>
 <style>
+/* ============================================================
+   串口 HEX 工具 - Web 版
+   视觉风格对齐「波特律动串口助手」(shadcn/ui neutral 主题)
+   ============================================================ */
 :root{
-  --bg:#0f1419; --panel:#1a2332; --panel-2:#243044; --border:#2d3a4f;
-  --text:#e7ecf3; --muted:#8b9cb3; --accent:#3b82f6; --accent-soft:rgba(59,130,246,.18);
-  --ok:#22c55e; --warn:#fbbf24; --err:#ef4444;
-  --term-bg:#0b1220; --term-fg:#cbd5e1;
+  color-scheme: light;
+  --bg:#ffffff; --fg:#0a0a0a; --card:#ffffff; --card-fg:#0a0a0a;
+  --primary:#0a0a0a; --primary-fg:#fafafa;
+  --secondary:#f5f5f5; --secondary-fg:#171717; --secondary-hover:#ebebeb;
+  --muted:#f5f5f5; --muted-fg:#737373;
+  --accent:#f5f5f5; --accent-fg:#0a0a0a;
+  --border:#e5e5e5; --input:#e5e5e5; --ring:#a1a1aa;
+  --destructive:#e40014;
+  --term-bg:#fafafa; --term-fg:#404040;
+  --rx:#16a34a; --tx:#dc2626;
+  --radius:0.625rem; --radius-lg:0.75rem;
+  --shadow:0 1px 2px rgba(0,0,0,.04);
+}
+html.dark{
+  color-scheme: dark;
+  --bg:#0a0a0a; --fg:#fafafa; --card:#171717; --card-fg:#fafafa;
+  --primary:#fafafa; --primary-fg:#0a0a0a;
+  --secondary:#262626; --secondary-fg:#fafafa; --secondary-hover:#333333;
+  --muted:#262626; --muted-fg:#a1a1a1;
+  --accent:#262626; --accent-fg:#fafafa;
+  --border:rgba(255,255,255,.10); --input:rgba(255,255,255,.16); --ring:#525252;
+  --destructive:#ff6568;
+  --term-bg:#0a0a0a; --term-fg:#d4d4d4;
+  --rx:#4ade80; --tx:#f87171;
+  --shadow:0 1px 2px rgba(0,0,0,.5);
 }
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
-  margin:0; font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
-  background:radial-gradient(ellipse at top,#1a2744 0%,var(--bg) 55%);
-  color:var(--text); min-height:100vh;
+  margin:0;
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg); color:var(--fg);
+  min-height:100vh; -webkit-font-smoothing:antialiased; font-size:14px;
 }
-.wrap{max-width:1500px; margin:0 auto; padding:14px 16px 16px; display:flex; flex-direction:column; height:100vh; gap:10px}
-h1{margin:0; font-size:1.5rem}
-.sub{color:var(--muted); font-size:.85rem; line-height:1.4; margin:0}
-.sub code{background:var(--panel-2); padding:1px 5px; border-radius:4px; font-size:.82rem}
-/* shared controls */
-input,select,button,textarea{
-  background:var(--panel-2); color:var(--text);
-  border:1px solid var(--border); border-radius:8px;
-  padding:7px 11px; font:inherit; font-size:.88rem; outline:none;
+::selection{background:var(--primary); color:var(--primary-fg)}
+
+/* ---------- 顶栏 ---------- */
+.appbar{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:2px 4px;
 }
-input[type=text],input[type=number],textarea{cursor:text}
-button{cursor:pointer; transition:border-color .12s, background .12s}
-button:hover:not(:disabled){border-color:var(--accent)}
-button:disabled{opacity:.5; cursor:not-allowed}
-button.primary{background:var(--accent-soft); border-color:rgba(59,130,246,.45); color:#bfdbfe}
-button.primary:hover:not(:disabled){background:rgba(59,130,246,.3)}
-button.danger{color:#fca5a5; border-color:rgba(239,68,68,.35)}
-button.danger:hover:not(:disabled){background:rgba(239,68,68,.15); border-color:var(--err)}
-input[type=checkbox]{accent-color:var(--accent); width:15px; height:15px; vertical-align:middle; cursor:pointer}
-input[type=file]{display:none}
-select{cursor:pointer}
+.brand{display:flex; align-items:center; gap:11px; min-width:0}
+.brand .logo{
+  width:34px; height:34px; flex:0 0 auto; border-radius:9px;
+  display:grid; place-items:center; color:#fff;
+  background:linear-gradient(145deg,#3b82f6,#2563eb);
+  box-shadow:0 6px 18px rgba(37,99,235,.35);
+}
+.brand .logo svg{width:19px; height:19px}
+.brand .title{display:flex; flex-direction:column; line-height:1.2; min-width:0}
+.brand .title b{font-size:1.05rem; font-weight:650; letter-spacing:.2px}
+.brand .title span{color:var(--muted-fg); font-size:.76rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.appbar-actions{margin-left:auto; display:flex; align-items:center; gap:8px}
+.icon-btn{
+  width:36px; height:36px; display:grid; place-items:center; cursor:pointer;
+  background:var(--secondary); color:var(--fg); border:1px solid var(--border);
+  border-radius:var(--radius); transition:background .15s, border-color .15s; font-size:1rem;
+}
+.icon-btn:hover{background:var(--secondary-hover)}
+.icon-btn svg{width:18px; height:18px}
 
-/* panels */
-.panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px}
-.panel-title{font-size:.92rem; font-weight:600; margin:0 0 10px; display:flex; align-items:center; gap:8px}
-.row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
-.field{display:flex; align-items:center; gap:6px}
-.field label{color:var(--muted); font-size:.85rem; white-space:nowrap}
-
-/* layout */
-.head-bar{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap}
-.head-bar h1{font-size:1.4rem}
-.conn-panel{padding:10px 14px}
-.conn-panel .row{gap:12px}
-.main-grid{display:grid; grid-template-columns: minmax(340px,1fr) minmax(340px,1.35fr); gap:10px; flex:1 1 0; min-height:0; margin:0; align-items:stretch}
+/* ---------- 布局骨架 ---------- */
+.wrap{
+  max-width:1520px; margin:0 auto; padding:14px 16px 16px;
+  display:flex; flex-direction:column; gap:12px; height:100vh;
+}
+.main-grid{
+  display:grid; grid-template-columns:minmax(340px,1fr) minmax(340px,1.4fr);
+  gap:12px; flex:1 1 0; min-height:0; align-items:stretch;
+}
 .grid-col{display:flex; flex-direction:column; min-height:0}
-/* 命令库/接收区面板：参与 flex 收缩，高度填满 main-grid 剩余空间 */
-.col-cmd .panel, .col-rx .panel{display:flex; flex-direction:column; min-height:0; padding:12px 14px}
-.grid-col .panel-title{margin-bottom:8px; flex:0 0 auto}
-.tx-panel{padding:10px 14px; flex:0 0 auto}
-.conn-status{flex:1; text-align:right; color:var(--muted); font-size:.85rem; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-.conn-status .dot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; vertical-align:middle; background:#64748b}
-.conn-status.connected .dot{background:var(--ok); box-shadow:0 0 6px var(--ok)}
 
-/* command list（列表式：每行一条，HEX 紧贴含义）*/
+/* ---------- 卡片 ---------- */
+.card{
+  background:var(--card); color:var(--card-fg);
+  border:1px solid var(--border); border-radius:var(--radius-lg);
+  padding:14px 16px; box-shadow:var(--shadow);
+}
+.card.col{display:flex; flex-direction:column; min-height:0; padding:12px 14px}
+.card-h{
+  font-size:.92rem; font-weight:650; margin:0 0 10px;
+  display:flex; align-items:center; gap:8px; flex:0 0 auto;
+}
+.card-h .pill{font-size:.7rem; font-weight:500; color:var(--muted-fg); background:var(--secondary); border:1px solid var(--border); padding:2px 8px; border-radius:999px}
+
+/* ---------- 表单元素 ---------- */
+input,select,button,textarea{
+  background:var(--secondary); color:var(--fg);
+  border:1px solid var(--border); border-radius:var(--radius);
+  padding:7px 11px; font:inherit; font-size:.86rem; outline:none;
+}
+input[type=text],input[type=number],textarea{cursor:text; background:transparent; border-color:var(--input)}
+select{cursor:pointer; background:var(--secondary)}
+input[type=file]{display:none}
+button{cursor:pointer; transition:background .14s, border-color .14s, color .14s; line-height:1.1}
+input:focus,select:focus,textarea:focus{border-color:var(--ring); box-shadow:0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent)}
+
+/* button variants */
+.btn{background:var(--secondary); color:var(--fg); border:1px solid var(--border); display:inline-flex; align-items:center; gap:6px}
+.btn:hover:not(:disabled){background:var(--secondary-hover)}
+.btn:disabled{opacity:.45; cursor:not-allowed}
+.btn-primary{background:var(--primary); color:var(--primary-fg); border-color:var(--primary)}
+.btn-primary:hover:not(:disabled){filter:brightness(.93)}
+.btn-danger{color:var(--destructive); border-color:color-mix(in srgb, var(--destructive) 38%, var(--border))}
+.btn-danger:hover:not(:disabled){background:color-mix(in srgb, var(--destructive) 12%, transparent); border-color:var(--destructive)}
+.btn-ghost{background:transparent; border-color:transparent; color:var(--muted-fg)}
+.btn-ghost:hover:not(:disabled){background:var(--secondary); color:var(--fg)}
+
+/* toggle pill（对齐参考站的 接收:HEX / 自动滚动 切换按钮） */
+.toggle{
+  background:var(--secondary); color:var(--muted-fg);
+  border:1px solid var(--border); border-radius:999px;
+  padding:5px 13px; font-size:.8rem; cursor:pointer; line-height:1.2;
+  transition:all .14s; display:inline-flex; align-items:center; gap:6px;
+}
+.toggle:hover{color:var(--fg)}
+.toggle.on{background:var(--fg); color:var(--bg); border-color:var(--fg)}
+.toggle .dot{width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.5}
+.toggle.on .dot{opacity:1}
+
+/* 发送格式分段切换（HEX / ASCII） */
+.seg{display:inline-flex; align-items:center; background:var(--secondary); border:1px solid var(--border); border-radius:999px; padding:3px; gap:2px}
+.seg-btn{background:transparent; color:var(--muted-fg); border:none; border-radius:999px; padding:4px 15px; font-size:.8rem; font-weight:650; letter-spacing:.4px; cursor:pointer; transition:all .14s; line-height:1.3}
+.seg-btn:hover{color:var(--fg)}
+.seg-btn.on{background:var(--fg); color:var(--bg)}
+
+/* ---------- 行 / 字段 ---------- */
+.row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+.field{display:flex; align-items:center; gap:7px}
+.field label,.lbl{color:var(--muted-fg); font-size:.82rem; white-space:nowrap}
+.conn-card{padding:12px 16px}
+.conn-card .row{gap:14px}
+
+/* ---------- 连接状态 ---------- */
+.conn-status{
+  flex:1; text-align:right; color:var(--muted-fg); font-size:.82rem;
+  font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.conn-status .dot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; background:#737373; transition:background .2s, box-shadow .2s}
+.conn-status.connected .dot{background:var(--rx); box-shadow:0 0 7px var(--rx)}
+.conn-status b{color:var(--fg); font-weight:600}
+
+/* ---------- 命令库 ---------- */
 .cmd-toolbar{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; flex:0 0 auto}
 .search-box{flex:1; min-width:140px}
-.cmd-scroll{flex:1 1 0; min-height:0; overflow:auto; border:1px solid var(--border); border-radius:8px}
-.cmd-item{
-  display:block;
-  padding:4px 10px; cursor:pointer; border-bottom:1px solid rgba(45,58,79,.4);
-  font-size:.82rem; line-height:1.4;
-}
-.cmd-item:hover{background:rgba(59,130,246,.08)}
-.cmd-item.active{background:var(--accent-soft)}
-.cmd-item .hex{font-family:Consolas,"Cascadia Mono",monospace; color:#93c5fd; display:block; word-break:break-all}
-.cmd-item .meaning{color:var(--text); word-break:break-word; display:block; margin-top:1px}
-.cmd-foot{display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; flex:0 0 auto}
-.cmd-foot .count{color:var(--muted); font-size:.82rem}
-.empty-hint{padding:18px; text-align:center; color:var(--muted); font-size:.85rem}
+.cmd-scroll{flex:1 1 0; min-height:0; overflow:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg)}
+.cmd-item{display:block; padding:7px 11px; cursor:pointer; border-bottom:1px solid var(--border); font-size:.82rem; line-height:1.4; transition:background .12s}
+.cmd-item:last-child{border-bottom:none}
+.cmd-item:hover{background:var(--secondary)}
+.cmd-item.active{background:var(--accent)}
+.cmd-item .hex{font-family:ui-monospace,"Cascadia Mono",Consolas,"Courier New",monospace; color:var(--tx); display:block; word-break:break-all; font-size:.82rem}
+html.dark .cmd-item .hex{color:#fda4af}
+.cmd-item .meaning{color:var(--fg); word-break:break-word; display:block; margin-top:2px; opacity:.92}
+.cmd-foot{display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px; flex:0 0 auto}
+.cmd-foot .count{color:var(--muted-fg); font-size:.8rem}
+.empty-hint{padding:22px; text-align:center; color:var(--muted-fg); font-size:.85rem}
 
-/* terminal (rx / tx) */
-.term-toolbar{display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin-bottom:8px; flex:0 0 auto}
-.chk{display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:.83rem; cursor:pointer}
+/* ---------- 终端（接收/发送） ---------- */
+.term-toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; flex:0 0 auto}
+.term-spacer{flex:1}
 .term{
-  background:var(--term-bg); color:var(--term-fg); border:1px solid var(--border); border-radius:8px;
+  background:var(--term-bg); color:var(--term-fg); border:1px solid var(--border); border-radius:var(--radius);
   padding:12px; white-space:pre-wrap; word-break:break-all; overflow:auto;
-  font:12.5px/1.6 Consolas,"Cascadia Mono","Courier New",monospace;
+  font:12.5px/1.65 ui-monospace,"Cascadia Mono",Consolas,"Courier New",monospace;
 }
 .term-rx{flex:1 1 0; min-height:0; overflow:auto}
 .term-rx .rxline{display:block}
-.term-rx .rxline.tx{color:#f87171}
-.term-rx .rxline.rx{color:#4ade80}
-.term-tx{width:100%; height:90px; resize:vertical; white-space:pre; color:var(--text)}
-.tx-current{color:var(--muted); font-size:.82rem; margin-bottom:6px}
-.tx-current b{color:var(--text); font-weight:600}
-.tx-actions{display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap}
+.term-rx .rxline.tx{color:var(--tx)}
+.term-rx .rxline.rx{color:var(--rx)}
+.term-tx{width:100%; height:92px; resize:vertical; white-space:pre; color:var(--fg); background:var(--bg)}
+.tx-current{color:var(--muted-fg); font-size:.82rem; margin-bottom:7px}
+.tx-current b{color:var(--fg); font-weight:600}
+.tx-actions{display:flex; gap:8px; margin-top:9px; align-items:center; flex-wrap:wrap}
+.tx-meter{display:flex; gap:14px; font-size:.78rem; color:var(--muted-fg); font-variant-numeric:tabular-nums}
+.tx-meter span b{color:var(--fg)}
 
-/* banner / toast */
-.banner{display:none; background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.4); color:#fde68a; border-radius:10px; padding:10px 14px; font-size:.85rem; margin-bottom:14px}
+/* ---------- banner / toast ---------- */
+.banner{display:none; background:color-mix(in srgb, var(--destructive) 9%, transparent); border:1px solid color-mix(in srgb, var(--destructive) 30%, var(--border)); color:var(--fg); border-radius:var(--radius-lg); padding:10px 14px; font-size:.84rem}
 .banner.show{display:block}
-.toast{position:fixed; left:50%; bottom:30px; transform:translateX(-50%); background:var(--panel); border:1px solid var(--border); color:var(--text); padding:10px 18px; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.5); font-size:.88rem; z-index:2000; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90vw}
+.banner b{color:var(--destructive)}
+.banner code{background:var(--secondary); border:1px solid var(--border); padding:1px 5px; border-radius:5px; font-size:.8rem}
+.toast{position:fixed; left:50%; bottom:30px; transform:translateX(-50%); background:var(--card); color:var(--fg); border:1px solid var(--border); padding:10px 18px; border-radius:var(--radius); box-shadow:0 12px 40px rgba(0,0,0,.35); font-size:.86rem; z-index:2000; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90vw}
 .toast.show{opacity:1}
-.toast.err{border-color:rgba(239,68,68,.5); color:#fca5a5}
-.toast.ok{border-color:rgba(34,197,94,.5); color:#86efac}
+.toast.err{border-color:color-mix(in srgb, var(--destructive) 55%, transparent)}
+.toast.ok{border-color:color-mix(in srgb, var(--rx) 50%, transparent)}
 
-/* modal */
-.modal-bg{position:fixed; inset:0; background:rgba(2,6,23,.72); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000}
+/* ---------- modal ---------- */
+.modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(2px); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000}
 .modal-bg.open{display:flex}
-.modal{width:min(680px,96vw); background:var(--panel); border:1px solid var(--border); border-radius:14px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 24px 80px rgba(0,0,0,.45)}
+.modal{width:min(680px,96vw); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); display:flex; flex-direction:column; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,.5)}
 .modal-head{padding:14px 18px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center}
-.modal-head .t{font-weight:600}
+.modal-head .t{font-weight:650}
 .modal-body{padding:16px 18px; display:flex; flex-direction:column; gap:10px}
-.modal-body textarea{width:100%; min-height:320px; resize:vertical; font:13px/1.5 Consolas,monospace}
-.modal-body .desc{color:var(--muted); font-size:.83rem}
+.modal-body textarea{width:100%; min-height:320px; resize:vertical; font:13px/1.5 ui-monospace,Consolas,monospace}
+.modal-body .desc{color:var(--muted-fg); font-size:.82rem}
 .modal-foot{padding:12px 18px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px}
-.modal-foot label{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:.83rem; margin-right:auto}
-.modal-foot input[type=text]{width:200px}
-.kbd{display:inline-block; padding:1px 6px; border:1px solid var(--border); border-bottom-width:2px; border-radius:4px; background:var(--panel-2); font:11px Consolas,monospace; color:var(--muted)}
-@media(max-width:880px){
-  .main-grid{grid-template-columns:1fr}
-  .main-grid{flex:none}
-  .grid-col .panel{min-height:260px}
+.modal-foot label{display:flex; align-items:center; gap:6px; color:var(--muted-fg); font-size:.82rem; margin-right:auto}
+.modal-foot input[type=text]{width:220px}
+.kbd{display:inline-block; padding:1px 6px; border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; background:var(--secondary); font:11px ui-monospace,Consolas,monospace; color:var(--muted-fg)}
+code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-size:.85em}
+
+@media(max-width:900px){
+  .main-grid{grid-template-columns:1fr; flex:none}
+  .grid-col.card{min-height:260px}
+  .wrap{height:auto}
 }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="head-bar">
-    <h1>串口 HEX 工具</h1>
-    <p class="sub">导入固定格式命令表（<code>HEX | 含义</code>），点选组包发送；也支持手动输入 HEX。</p>
-  </div>
+  <!-- 顶栏 -->
+  <header class="appbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 16v6"/><rect x="8" y="8" width="8" height="8" rx="1.5"/><path d="M5 12H2"/><path d="M22 12h-3"/></svg>
+      </div>
+      <div class="title">
+        <b>串口 HEX 工具</b>
+        <span>导入命令表 · 点选发送 · 浏览器直连串口</span>
+      </div>
+    </div>
+    <div class="appbar-actions">
+      <button type="button" class="icon-btn" id="themeBtn" title="切换浅色/深色" aria-label="切换主题">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </header>
 
   <div class="banner" id="noSerialBanner">
     ⚠️ 当前浏览器不支持 <b>Web Serial API</b>，无法收发真实串口数据。请改用 <b>Chrome</b> 或 <b>Edge</b>，并通过 <code>http(s)://</code> 或 <code>localhost</code> 打开本页（不能直接双击文件打开）。命令库功能仍可使用。
   </div>
 
-  <!-- 连接设置 -->
-  <div class="panel conn-panel">
+  <!-- 串口设置 -->
+  <section class="card conn-card">
     <div class="row">
       <div class="field">
-        <label for="portSelect">串口</label>
-        <select id="portSelect" style="min-width:200px"><option value="">点击「刷新」枚举已授权串口</option></select>
-        <button type="button" id="refreshBtn">刷新</button>
+        <label class="lbl" for="portSelect">串口</label>
+        <select id="portSelect" style="min-width:210px"><option value="">点击「刷新」枚举已授权串口</option></select>
+        <button type="button" class="btn" id="refreshBtn">刷新</button>
       </div>
       <div class="field">
-        <label for="baudSelect">波特率</label>
+        <label class="lbl" for="baudSelect">波特率</label>
         <select id="baudSelect">
           <option>1200</option><option>2400</option><option>4800</option>
           <option>9600</option><option>19200</option><option>38400</option>
@@ -152,22 +270,22 @@ select{cursor:pointer}
           <option>460800</option><option>921600</option><option>1000000</option><option>2000000</option>
         </select>
       </div>
-      <button type="button" class="primary" id="connectBtn">打开串口</button>
+      <button type="button" class="btn btn-primary" id="connectBtn">打开串口</button>
       <div class="conn-status" id="connStatus"><span class="dot"></span>未连接</div>
     </div>
-  </div>
+  </section>
 
   <!-- 命令库 + 接收区 -->
   <div class="main-grid">
     <!-- 命令库 -->
-    <div class="panel grid-col col-cmd">
-      <div class="panel-title">命令库</div>
+    <section class="card col col-cmd">
+      <div class="card-h">命令库 <span class="pill" id="cmdCountPill">0</span></div>
       <div class="cmd-toolbar">
-        <button type="button" id="importBtn">导入文件</button>
-        <button type="button" id="pasteBtn">粘贴导入</button>
-        <button type="button" id="exportBtn">导出</button>
-        <button type="button" class="danger" id="clearBtn">清空</button>
-        <button type="button" id="skillBtn" title="下载 AI 组包 skill（SKILL.md），装到 AI 助手后可按本工具格式生成 commands.txt">下载组包 Skill</button>
+        <button type="button" class="btn" id="importBtn">导入文件</button>
+        <button type="button" class="btn" id="pasteBtn">粘贴导入</button>
+        <button type="button" class="btn" id="exportBtn">导出</button>
+        <button type="button" class="btn btn-danger" id="clearBtn">清空</button>
+        <button type="button" class="btn btn-ghost" id="skillBtn" title="下载 AI 组包 skill（SKILL.md），装到 AI 助手后可按本工具格式生成 commands.json">下载组包 Skill</button>
         <input type="file" id="fileInput" accept=".txt,.csv,.log,text/plain">
       </div>
       <div class="cmd-toolbar">
@@ -179,53 +297,61 @@ select{cursor:pointer}
       <div class="cmd-foot">
         <div class="count" id="cmdCount">0 条命令</div>
         <div class="row" style="gap:8px">
-          <button type="button" id="fillBtn">填入发送区</button>
-          <button type="button" class="primary" id="sendSelBtn">直接发送</button>
+          <button type="button" class="btn" id="fillBtn">填入发送区</button>
+          <button type="button" class="btn btn-primary" id="sendSelBtn">直接发送</button>
         </div>
       </div>
-    </div>
+    </section>
 
     <!-- 接收区 -->
-    <div class="panel grid-col col-rx">
-      <div class="panel-title">接收区</div>
+    <section class="card col col-rx">
+      <div class="card-h">接收区</div>
       <div class="term-toolbar">
-        <label class="chk"><input type="checkbox" id="rxHexChk" checked> HEX 显示</label>
-        <label class="chk"><input type="checkbox" id="rxAsciiChk"> ASCII 显示</label>
-        <label class="chk"><input type="checkbox" id="rxTsChk" checked> 时间戳</label>
-        <label class="chk"><input type="checkbox" id="rxPauseChk"> 暂停接收显示</label>
-        <div style="flex:1"></div>
-        <button type="button" id="exportLogBtn">导出日志</button>
-        <button type="button" id="clearRxBtn">清空接收</button>
+        <button type="button" class="toggle on" id="rxHexBtn" aria-pressed="true"><span class="dot"></span>HEX</button>
+        <button type="button" class="toggle" id="rxAsciiBtn" aria-pressed="false"><span class="dot"></span>ASCII</button>
+        <button type="button" class="toggle on" id="rxTsBtn" aria-pressed="true"><span class="dot"></span>时间戳</button>
+        <button type="button" class="toggle" id="rxPauseBtn" aria-pressed="false"><span class="dot"></span>暂停显示</button>
+        <div class="term-spacer"></div>
+        <button type="button" class="btn" id="exportLogBtn">导出日志</button>
+        <button type="button" class="btn btn-danger" id="clearRxBtn">清空接收</button>
       </div>
       <div class="term term-rx" id="rxTerm"></div>
-    </div>
+    </section>
   </div>
 
   <!-- 发送区 -->
-  <div class="panel tx-panel">
-    <div class="panel-title">发送区 (HEX)</div>
+  <section class="card">
+      <div class="card-h">发送区</div>
     <div class="tx-current" id="txCurrent">当前命令: <b>手动输入</b></div>
-    <textarea class="term term-tx" id="txInput" spellcheck="false" placeholder="AA 55 01 00">AA 55 01 00</textarea>
+    <textarea class="term term-tx" id="txInput" spellcheck="false" placeholder="请输入命令"></textarea>
     <div class="tx-actions">
-      <button type="button" class="primary" id="sendBtn">发送 HEX</button>
-      <button type="button" id="clearTxBtn">清空发送</button>
-      <span style="flex:1"></span>
-      <span style="color:var(--muted); font-size:.8rem"><span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> 发送　<span class="kbd">Ctrl</span>+<span class="kbd">F</span> 搜索</span>
+      <div class="seg" role="group" aria-label="发送格式">
+        <button type="button" class="seg-btn on" id="txHexMode" aria-pressed="true">HEX</button>
+        <button type="button" class="seg-btn" id="txAsciiMode" aria-pressed="false">ASCII</button>
+      </div>
+      <button type="button" class="btn btn-primary" id="sendBtn">发送 HEX</button>
+      <button type="button" class="btn" id="clearTxBtn">清空发送</button>
+      <span class="term-spacer"></span>
+      <div class="tx-meter">
+        <span>Tx: <b id="meterTx">0</b> B</span>
+        <span>Rx: <b id="meterRx">0</b> B</span>
+      </div>
+      <span style="color:var(--muted-fg); font-size:.78rem"><span class="kbd">Ctrl</span>+<span class="kbd">Enter</span> 发送　<span class="kbd">Ctrl</span>+<span class="kbd">F</span> 搜索</span>
     </div>
-  </div>
+  </section>
 </div>
 
 <!-- 粘贴导入模态框 -->
 <div class="modal-bg" id="pasteModal">
   <div class="modal">
-    <div class="modal-head"><span class="t">粘贴导入命令表</span><button type="button" id="pasteCloseBtn">✕</button></div>
+    <div class="modal-head"><span class="t">粘贴导入命令表</span><button type="button" class="btn btn-ghost" id="pasteCloseBtn">✕</button></div>
     <div class="modal-body">
-      <div class="desc">粘贴整理好的命令表。每行格式: <code>HEX | 含义</code>（以 <code>#</code> 开头的行视为注释，空行忽略）。</div>
-      <textarea id="pasteText" spellcheck="false" placeholder="AA 55 01 00 | 查询设备状态&#10;55 AA 02 00 01 30 00 00 32 | 模块查询设备能力"></textarea>
+      <div class="desc">粘贴 JSON 格式命令表（含 <code>commands</code> 数组与 <code>serial</code> 串口配置）；也兼容旧版 <code>HEX | 含义</code> 文本。</div>
+      <textarea id="pasteText" spellcheck="false" placeholder='{ "format":"serial-command-table", "version":1, "serial":{ "baudRate":9600 }, "commands":[ { "hex":"AA 55 01 00", "meaning":"查询设备状态" } ] }'></textarea>
     </div>
     <div class="modal-foot">
-      <button type="button" id="pasteCancelBtn">取消</button>
-      <button type="button" class="primary" id="pasteImportBtn">导入</button>
+      <button type="button" class="btn" id="pasteCancelBtn">取消</button>
+      <button type="button" class="btn btn-primary" id="pasteImportBtn">导入</button>
     </div>
   </div>
 </div>
@@ -233,15 +359,15 @@ select{cursor:pointer}
 <!-- 导出模态框 -->
 <div class="modal-bg" id="exportModal">
   <div class="modal">
-    <div class="modal-head"><span class="t">导出命令表</span><button type="button" id="exportCloseBtn">✕</button></div>
+    <div class="modal-head"><span class="t">导出命令表</span><button type="button" class="btn btn-ghost" id="exportCloseBtn">✕</button></div>
     <div class="modal-body">
       <label>标题（可选）: <input type="text" id="exportTitle" placeholder="例：科博达门锁华住串口协议V1.2"></label>
       <textarea id="exportText" spellcheck="false" style="min-height:260px"></textarea>
     </div>
     <div class="modal-foot">
-      <button type="button" id="exportCancelBtn">取消</button>
-      <button type="button" class="primary" id="exportDownloadBtn">下载 .txt</button>
-      <button type="button" id="exportCopyBtn">复制到剪贴板</button>
+      <button type="button" class="btn" id="exportCancelBtn">取消</button>
+      <button type="button" class="btn btn-primary" id="exportDownloadBtn">下载 .json</button>
+      <button type="button" class="btn" id="exportCopyBtn">复制到剪贴板</button>
     </div>
   </div>
 </div>
@@ -365,14 +491,46 @@ function parseCommandTable(text){
   return {entries, errors, baud};
 }
 
-// format_command_table（导出格式）
-function formatCommandTable(entries, title){
-  const lines = ['# Serial Command Table v'+FORMAT_VERSION];
-  if(title && title.trim()) lines.push('# title: '+title.trim());
-  lines.push('# format: HEX | meaning');
-  lines.push('');
-  entries.forEach(e=>lines.push(e.hexText+' | '+e.meaning));
-  return lines.join('\n')+'\n';
+// parse_command_json：解析 JSON 格式命令表（新版规范，含串口配置）
+// 结构：{format,version,title,serial:{baudRate,dataBits,parity,stopBits},checksum,note,commands:[{hex,meaning}]}
+function parseCommandJson(text){
+  let obj;
+  try { obj = JSON.parse(text); }
+  catch(e){ return {entries:[], errors:['JSON 解析失败：'+e.message], baud:null, meta:{title:'',checksum:'',note:''}}; }
+  const errors = [];
+  const cmds = Array.isArray(obj.commands) ? obj.commands : null;
+  if(!cmds){ return {entries:[], errors:['JSON 缺少 commands 数组'], baud:null, meta:{title:'',checksum:'',note:''}}; }
+  const entries = [];
+  cmds.forEach((c,i)=>{
+    if(!c || typeof c !== 'object'){ errors.push('第 '+(i+1)+' 条不是对象'); return; }
+    const meaning = (c.meaning==null?'':String(c.meaning)).trim();
+    if(!meaning){ errors.push('第 '+(i+1)+' 条缺少 meaning'); return; }
+    let hexText;
+    try { hexText = normalizeHexText(String(c.hex==null?'':c.hex)); }
+    catch(e){ errors.push('第 '+(i+1)+' 条 HEX 无效：'+e.message); return; }
+    entries.push({hexText, meaning});
+  });
+  let baud = null;
+  if(obj.serial && Number(obj.serial.baudRate) > 0) baud = Number(obj.serial.baudRate);
+  const meta = {
+    title: obj.title==null?'':String(obj.title).trim(),
+    checksum: obj.checksum==null?'':String(obj.checksum).trim(),
+    note: obj.note==null?'':String(obj.note).trim(),
+  };
+  return {entries, errors, baud, meta};
+}
+
+// format_command_json（导出格式，与 parseCommandJson 对应；含串口配置）
+function formatCommandJson(entries, title){
+  const baud = Number(baudSelect.value) || 115200;
+  const meta = state.cmdMeta || {};
+  const obj = { format:'serial-command-table', version:1 };
+  if(title && title.trim()) obj.title = title.trim();
+  obj.serial = { baudRate:baud, dataBits:8, parity:'none', stopBits:1 };
+  if(meta.checksum) obj.checksum = meta.checksum;
+  if(meta.note) obj.note = meta.note;
+  obj.commands = entries.map(e=>({hex:e.hexText, meaning:e.meaning}));
+  return JSON.stringify(obj, null, 2);
 }
 
 /* ---------- 状态 ---------- */
@@ -391,19 +549,38 @@ const state = {
   activeIndex: -1,      // 当前选中（在 filtered 中）
   paused: false,
   trafficLog: [],       // 完整收发记录 {dir:'TX'|'RX', ts, hex, ascii, len}（不受"暂停显示"影响）
-  rxFrameBuf: [],       // RX 组帧缓冲：跨 chunk 拼完整 AA55 帧，避免一帧被拆成多行显示
+  rxRawBuf: [],         // 原始流缓冲：攒短时间内连续到达的字节，空闲超时后合并成一行显示
+  rxRawTimer: null,     // 原始流空闲 flush 定时器
+  txMode: 'hex',        // 发送格式：'hex' | 'ascii'（默认 hex）
+  cmdMeta: {title:'', checksum:'', note:''},  // 导入命令表的元信息（导出时回写，保证往返一致）
 };
 
 /* ---------- DOM ---------- */
 const $ = id => document.getElementById(id);
 const portSelect=$('portSelect'), baudSelect=$('baudSelect'), connectBtn=$('connectBtn'), refreshBtn=$('refreshBtn');
 const connStatus=$('connStatus');
-const cmdList=$('cmdList'), cmdCount=$('cmdCount'), searchInput=$('searchInput');
+const cmdList=$('cmdList'), cmdCount=$('cmdCount'), cmdCountPill=$('cmdCountPill'), searchInput=$('searchInput');
 const importBtn=$('importBtn'), pasteBtn=$('pasteBtn'), exportBtn=$('exportBtn'), clearBtn=$('clearBtn'), fileInput=$('fileInput'), skillBtn=$('skillBtn');
 const fillBtn=$('fillBtn'), sendSelBtn=$('sendSelBtn');
-const rxTerm=$('rxTerm'), rxHexChk=$('rxHexChk'), rxAsciiChk=$('rxAsciiChk'), rxTsChk=$('rxTsChk'), rxPauseChk=$('rxPauseChk'), clearRxBtn=$('clearRxBtn'), exportLogBtn=$('exportLogBtn');
+const rxTerm=$('rxTerm'), clearRxBtn=$('clearRxBtn'), exportLogBtn=$('exportLogBtn');
+const meterTx=$('meterTx'), meterRx=$('meterRx');
 const txInput=$('txInput'), txCurrent=$('txCurrent'), sendBtn=$('sendBtn'), clearTxBtn=$('clearTxBtn');
+const txHexMode=$('txHexMode'), txAsciiMode=$('txAsciiMode');
 const toastEl=$('toast');
+
+/* ---------- 接收区显示选项（toggle 按钮，功能等价原 checkbox） ---------- */
+const isOn = id => document.getElementById(id).classList.contains('on');
+function bindToggle(id, onChange){
+  const btn = document.getElementById(id);
+  btn.addEventListener('click', ()=>{
+    btn.classList.toggle('on');
+    const on = btn.classList.contains('on');
+    btn.setAttribute('aria-pressed', String(on));
+    if(onChange) onChange(on);
+  });
+}
+bindToggle('rxHexBtn');   bindToggle('rxAsciiBtn');   bindToggle('rxTsBtn');
+bindToggle('rxPauseBtn', on=>{ state.paused = on; });
 
 /* ---------- toast ---------- */
 let toastTimer=null;
@@ -414,14 +591,45 @@ function toast(msg, type=''){
   toastTimer = setTimeout(()=>{ toastEl.className='toast '+type; }, 2600);
 }
 
+/* ---------- 主题切换 ---------- */
+const themeBtn=$('themeBtn'), themeIcon=$('themeIcon');
+const SUN_PATH='<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>';
+const MOON_PATH='<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+function syncThemeIcon(){
+  const dark = document.documentElement.classList.contains('dark');
+  themeIcon.innerHTML = dark ? MOON_PATH : SUN_PATH;
+}
+themeBtn.addEventListener('click', ()=>{
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  try{ localStorage.setItem('serial-theme', dark ? 'dark' : 'light'); }catch(e){}
+  syncThemeIcon();
+});
+syncThemeIcon();
+
+/* ---------- 发送格式 HEX / ASCII（默认 HEX） ---------- */
+function setTxMode(mode){
+  state.txMode = mode;
+  const hex = mode==='hex';
+  txHexMode.classList.toggle('on', hex);
+  txAsciiMode.classList.toggle('on', !hex);
+  txHexMode.setAttribute('aria-pressed', String(hex));
+  txAsciiMode.setAttribute('aria-pressed', String(!hex));
+  sendBtn.textContent = hex ? '发送 HEX' : '发送 ASCII';
+}
+txHexMode.addEventListener('click', ()=>setTxMode('hex'));
+txAsciiMode.addEventListener('click', ()=>setTxMode('ascii'));
+
 /* ---------- 兼容性检测 ---------- */
 const serialSupported = ('serial' in navigator);
 if(!serialSupported){ $('noSerialBanner').classList.add('show'); }
 
 /* ---------- 状态栏 ---------- */
 function updateCounters(){
-  connStatus.innerHTML = '<span class="dot"></span>'+state.baseStatus+' | RX: '+state.rxTotal+' bytes | TX: '+state.txTotal+' bytes';
+  connStatus.innerHTML = '<span class="dot"></span>'+state.baseStatus+' | <b>RX</b> '+state.rxTotal+' B | <b>TX</b> '+state.txTotal+' B';
   connStatus.classList.toggle('connected', state.connected);
+  meterRx.textContent = state.rxTotal;
+  meterTx.textContent = state.txTotal;
 }
 function setStatus(text){ state.baseStatus = text; updateCounters(); }
 
@@ -445,6 +653,7 @@ function renderCommands(){
     cmdList.innerHTML = html;
   }
   cmdCount.textContent = (q?('显示 '+state.filtered.length+'/'+state.entries.length):state.entries.length)+' 条命令';
+  cmdCountPill.textContent = state.entries.length;
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -475,6 +684,7 @@ cmdList.addEventListener('dblclick', ev=>{   // 双击 -> 填入发送区（只�
 function fillSelectedCommand(){
   const e = selectedEntry();
   if(!e){ toast('请先在命令库中选择一条命令。'); return; }
+  setTxMode('hex');          // 命令库均为 HEX，填入时确保切到 HEX 模式
   txInput.value = e.hexText;
   state.selectedMeaning = e.meaning;
   txCurrent.innerHTML = '当前命令: <b>'+escapeHtml(e.meaning)+'</b>';
@@ -483,13 +693,19 @@ function sendSelectedCommand(){   // 直接发送 = 先填后发
   fillSelectedCommand();
   if(selectedEntry()) sendHex();
 }
-async function sendHex(){
+async function sendHex(){   // 按 txMode 分流：HEX 解析十六进制；ASCII 按 UTF-8 编码原文发送
   if(!state.connected || !state.port){
     toast('请先打开串口。','err'); return;
   }
   let payload;
-  try { payload = parseHexInput(txInput.value); }
-  catch(e){ toast('HEX 格式错误：'+e.message,'err'); return; }
+  if(state.txMode === 'ascii'){
+    const text = txInput.value;
+    if(text === ''){ toast('发送内容不能为空。','err'); return; }
+    payload = new TextEncoder().encode(text);   // ASCII 字符即单字节；中文等多字节按 UTF-8
+  }else{
+    try { payload = parseHexInput(txInput.value); }
+    catch(e){ toast('HEX 格式错误：'+e.message,'err'); return; }
+  }
   try{
     const writer = state.port.writable.getWriter();
     try{ await writer.write(payload); }
@@ -506,7 +722,7 @@ async function sendHex(){
 function appendTxLog(payload){
   // 写入完整收发日志（不受显示选项影响，含 HEX + ASCII）
   logTraffic('TX', payload);
-  const showHex = rxHexChk.checked, showAscii = rxAsciiChk.checked, showTs = rxTsChk.checked;
+  const showHex = isOn('rxHexBtn'), showAscii = isOn('rxAsciiBtn'), showTs = isOn('rxTsBtn');
   const lines = [];
   const prefix = showTs ? timestampPrefix() : '';
   // 发送日志：TX 日志（HEX 为主）
@@ -525,64 +741,33 @@ function timestampPrefix(){
   const fff = String(d.getMilliseconds()).padStart(3,'0');
   return '['+hh+':'+mm+':'+ss+'.'+fff+'] ';
 }
-function appendRx(data){
-  // 组帧缓冲：把 chunk 追加进 rxFrameBuf，按 AA55 协议帧（帧头 + 单字节长度）
-  // 拼出完整帧再显示。避免硬件把一帧拆成多批到达时被显示成多行。
-  // data 可能是 Uint8Array 或 ArrayBuffer。
-  const chunk = data instanceof Uint8Array ? data : new Uint8Array(data);
-  for(let i=0;i<chunk.length;i++) state.rxFrameBuf.push(chunk[i]);
-
-  // 尝试从缓冲区拼出尽可能多的完整帧
-  let consumed = 0;
-  while(consumed < state.rxFrameBuf.length){
-    const buf = state.rxFrameBuf;
-    // 找下一个 AA 55 帧头（从 consumed 起）。注意循环上界用 buf.length-1，
-    // 因为要检查 buf[i+1]。所以末尾单独一个 AA（可能是未齐的帧头）这里查不到。
-    let headIdx = -1;
-    for(let i=consumed;i<buf.length-1;i++){
-      if(buf[i]===0xAA && buf[i+1]===0x55){ headIdx = i; break; }
-    }
-    if(headIdx === -1){
-      // 没找到完整 AA 55 帧头。但要小心：缓冲区末尾若是单独的 AA，
-      // 它很可能是下一帧帧头的前半（下一字节可能是 55），必须保留等下次 chunk。
-      // 只有末尾是 AA 时：把它之前的字节当杂散吐掉，AA 留在缓冲。
-      if(buf.length >= 1 && buf[buf.length-1] === 0xAA){
-        const loose = buf.slice(consumed, buf.length-1);
-        if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
-        state.rxFrameBuf = [0xAA];
-        return;
-      }
-      // 末尾不是 AA：剩余全部当裸数据吐掉，清空缓冲
-      const loose = buf.slice(consumed);
-      if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
-      state.rxFrameBuf = [];
-      return;
-    }
-    if(headIdx > consumed){
-      // 帧头前有杂散字节，先当裸数据吐掉
-      const loose = buf.slice(consumed, headIdx);
-      if(loose.length){ logTraffic('RX', loose); renderRxFrame(loose); }
-      consumed = headIdx;
-    }
-    // 此时 consumed 指向 AA。需要至少 3 字节才能读长度（AA 55 LEN）
-    if(buf.length - consumed < 3) break; // 等下次 chunk
-    const len = buf[consumed+2]; // 数据长度字段（除包头和校验外的字节数）
-    // 本协议：完整帧 = 2(包头) + len(数据) + 1(校验)
-    const frameLen = 2 + len + 1;
-    if(buf.length - consumed < frameLen) break; // 帧未收全，等下次 chunk
-    // 凑齐一帧
-    const frame = buf.slice(consumed, consumed + frameLen);
-    logTraffic('RX', frame);
-    renderRxFrame(frame);
-    consumed += frameLen;
-  }
-  // 丢掉已消费部分，保留残包
-  if(consumed > 0) state.rxFrameBuf = state.rxFrameBuf.slice(consumed);
+// 原始流式显示 + 空闲合并：Web Serial 的 reader.read() 每次只返回缓冲区里"当前已有"
+// 的字节，回环 / 高速设备会把一次发送拆成多个 chunk（你看到的 AA / 55 01 00… / 01 / …）。
+// 这里把短时间（RX_IDLE_MS）内连续到达的字节攒到一起，等"空闲"超时再一次性渲染成一行，
+// 避免显示被打成碎片。数据若持续不断（无空闲），攒到 RX_MAX_BUF 也强制 flush，防止无限堆积。
+// 想调合并灵敏度：改 RX_IDLE_MS（更大=合并更多、显示更晚；更小=更碎但更实时）。
+const RX_IDLE_MS = 40;
+const RX_MAX_BUF = 2048;
+function appendRxRaw(data){
+  const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if(arr.length === 0) return;
+  for(let i=0;i<arr.length;i++) state.rxRawBuf.push(arr[i]);
+  if(state.rxRawTimer) clearTimeout(state.rxRawTimer);
+  if(state.rxRawBuf.length >= RX_MAX_BUF){ flushRxRaw(); return; }   // 防无限堆积
+  state.rxRawTimer = setTimeout(flushRxRaw, RX_IDLE_MS);             // 空闲超时再 flush
+}
+function flushRxRaw(){
+  state.rxRawTimer = null;
+  if(!state.rxRawBuf || state.rxRawBuf.length === 0) return;
+  const data = new Uint8Array(state.rxRawBuf);
+  state.rxRawBuf = [];
+  logTraffic('RX', data);
+  renderRxFrame(data);
 }
 function renderRxFrame(data){
   // 把一帧（或裸数据）渲染到接收区。data: number[] 或 Uint8Array
   const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
-  const showHex = rxHexChk.checked, showAscii = rxAsciiChk.checked, showTs = rxTsChk.checked;
+  const showHex = isOn('rxHexBtn'), showAscii = isOn('rxAsciiBtn'), showTs = isOn('rxTsBtn');
   const lines = [];
   const prefix = showTs ? timestampPrefix() : '';
   if(showHex) lines.push(prefix+'RX HEX: '+formatHex(arr));
@@ -698,7 +883,7 @@ async function connect(){
   state.keepReading = true;
   // UI
   connectBtn.textContent = '关闭串口';
-  connectBtn.classList.remove('primary');
+  connectBtn.classList.remove('btn-primary');
   portSelect.disabled = baudSelect.disabled = refreshBtn.disabled = true;
   setStatus('已连接 '+serialPortName(port, ports.indexOf(port))+' @ '+baud);
   startReader();
@@ -713,7 +898,9 @@ async function startReader(){
         if(value && value.length){
           state.rxTotal += value.length;
           updateCounters();
-          if(!rxPauseChk.checked) appendRx(value);
+          if(!isOn('rxPauseBtn')){
+            appendRxRaw(value);                          // 原始流显示：空闲合并，避免回环/高速数据碎行
+          }
         }
       }
     }catch(err){
@@ -737,9 +924,12 @@ async function disconnect(silent){
   try{ if(state.reader){ state.reader.releaseLock(); } }catch(e){}
   try{ await state.port.close(); }catch(e){}
   state.port = null; state.reader = null; state.connected = false;
-  state.rxFrameBuf = []; // 断开时清空组帧缓冲，避免残留半帧污染下次连接
+  // 断开：先把原始流缓冲里没收尾的字节 flush 出来（不丢数据），再清缓冲
+  if(state.rxRawTimer){ clearTimeout(state.rxRawTimer); state.rxRawTimer=null; }
+  if(state.rxRawBuf && state.rxRawBuf.length){ flushRxRaw(); }
+  state.rxRawBuf = [];
   connectBtn.textContent = '打开串口';
-  connectBtn.classList.add('primary');
+  connectBtn.classList.add('btn-primary');
   portSelect.disabled = baudSelect.disabled = refreshBtn.disabled = false;
   setStatus('未连接');
   refreshPorts();
@@ -759,56 +949,57 @@ skillBtn.addEventListener('click', downloadSkill);
 // 组包 Skill 全文（内嵌，下载按钮直接吐这个内容；不依赖外部文件，file:// 也能用）
 const SKILL_MD = `---
 name: serial-cmd-pack
-description: 为串口 HEX 工具网页（hex-serial-tool-web）生成 commands.txt 命令表。当用户提到"组包""生成命令表""做个 commands.txt""把协议转成可点选的 HEX 命令""串口命令组包"，或给出串口/模组协议文档（含帧格式、FuncID、校验方式）要求转成工具能导入的格式时立即触发。输出符合 hex-serial-tool-web 工具的 HEX | meaning 文本格式，导入后在网页命令库显示为可点选的 HEX 命令。
+description: 为串口 HEX 工具网页（hex-serial-tool-web）生成 JSON 格式命令表（commands.json）。当用户提到"组包""生成命令表""做个 commands.json""把协议转成可点选的 HEX 命令""串口命令组包"，或给出串口/模组协议文档（含帧格式、FuncID、校验方式、波特率）要求转成工具能导入的格式时立即触发。输出符合 hex-serial-tool-web 工具的 JSON 格式，导入后在网页命令库显示为可点选的 HEX 命令，并自动套用串口配置（波特率等）。
 ---
 
-# 串口命令组包（commands.txt 生成器）
+# 串口命令组包（commands.json 生成器）
 
-把用户给的串口协议文档/描述，转换成 hex-serial-tool-web 工具能导入的命令表文件（commands.txt）。导入后网页命令库会显示成可点选的命令列表，点一下就发送 HEX。
+把用户给的串口协议文档/描述，转换成 hex-serial-tool-web 工具能导入的 **JSON 命令表**（commands.json）。导入后网页命令库会显示成可点选的命令列表，点一下就发送 HEX，并自动切换到协议声明的波特率。
 
-## 目标工具的格式规范（必须严格遵守）
+## 目标工具的 JSON 格式规范（必须严格遵守）
 
-工具用一种简单的文本格式描述命令表。生成的内容必须能被工具的 parseCommandTable 正确解析，否则导入失败。
+工具只认下面这个 JSON 结构（UTF-8、标准 JSON、字段名固定）。必须是合法 JSON：双引号、无注释、无尾逗号。
 
-### 文件整体结构
+    {
+      "format": "serial-command-table",
+      "version": 1,
+      "title": "设备名 + 协议版本（建议）",
+      "serial": {
+        "baudRate": 9600,
+        "dataBits": 8,
+        "parity": "none",
+        "stopBits": 1
+      },
+      "checksum": "xor",
+      "note": "校验规则 / 备注（人读，工具不解析）",
+      "commands": [
+        { "hex": "AA 55 09 00 04 01 02 25 01 8B 02 5C", "meaning": "[模组下发] 读取当前时钟" },
+        { "hex": "06", "meaning": "[链路应答] ACK 校验通过" }
+      ]
+    }
 
-    # Serial Command Table v1
-    # title: <标题，如 科博达门锁华住串口协议V1.2>
-    # source: <可选，协议文档来源>
-    # format: HEX | meaning
-    # baud: <可选，波特率整数，如 9600。网站导入时会自动切换波特率下拉框>
-    # checksum: <可选，校验算法说明，如 xor>
-    # note: <可选，备注，如 校验规则/未启用项>
-    <空行>
-    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
-    AA 55 10 00 13 01 09 25 01 8B 01 07 DE 01 01 01 01 01 95 | [MCU回复] 回复当前时钟
+### 字段说明
 
-### 各部分规则
-
-1. 第 1 行（固定）：# Serial Command Table v1 —— 版本号，工具靠它识别。不能改。
-2. # title: 命令表标题，建议写「设备名 + 协议版本」。
-3. # source:（可选）协议文档来源。
-4. # format:（固定）HEX | meaning —— 声明每行格式。不能改。
-5. # baud:（可选但强烈建议）：波特率整数，如 # baud: 9600。网站导入命令表时会自动读取这个值，切换波特率下拉框（8N1 固定，不需要声明）。协议文档里的波特率务必写进这里，而不是只写在 note 里——只有 # baud: 这一行会被网站自动应用，note 里的文字网站不解析。
-6. # checksum:（可选）校验算法说明，写人话（如 xor、累加和取低字节）。工具不解析它，仅供人读。
-7. # note:（可选）备注。校验规则/未启用项/拼包说明放这里（波特率请优先用 # baud: 声明）。
-7. 空行：标题块和命令行之间留一个空行。
-8. 命令行：<HEX 字节> | <含义>
-
-### 命令行格式（核心）
-
-    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
-
-- HEX 部分：字节用空格分隔，每个字节 2 位十六进制（AA、55、09…）。大小写不限（工具会规范化为大写）。只能含 0-9 A-F 和空格。
-- 分隔符： | （竖线两侧各一个空格）。
-- 含义部分：人话描述。建议带方向前缀，如 [模组下发]、[MCU回复]、[MCU主动上报]、[链路应答]。
-- # 注释：行内可用 # 加注释，# 之后的内容会被忽略。
+- format：固定 "serial-command-table"，工具靠它识别。不能改。
+- version：固定 1。
+- title：命令表标题，建议写「设备名 + 协议版本」。
+- serial.baudRate：波特率整数（如 9600、115200）。**强烈建议**。网站导入时会自动切换波特率下拉框。协议里的波特率务必写这里，而不是只写在 note。
+- serial.dataBits：数据位，默认 8（网站固定 8N1，写上仅供文档完整）。
+- serial.parity：校验位，默认 "none"。
+- serial.stopBits：停止位，默认 1。
+- checksum：校验算法说明（人话，如 "xor"、"累加和取低字节"）。工具不解析，仅供人读。
+- note：备注（校验规则 / 未启用项 / 拼包说明）。工具不解析。
+- commands：命令数组，不能为空。
+- commands[].hex：HEX 字节串，字节用空格分隔，每字节 2 位十六进制（AA 55 09…）。大小写不限（工具会规范化为大写）。只能含 0-9 A-F 和空格。
+- commands[].meaning：含义（人话描述）。建议带方向前缀：[模组下发]/[MCU回复]/[MCU主动上报]/[链路应答]。不能为空。
 
 ### 解析规则（生成时必须满足）
 
-- 以 # 开头的行 = 标题/声明行。
-- 空行跳过。
-- 其余每行必须能拆出 [HEX, 含义] 两部分：HEX 必须有效（只含十六进制和空格），含义不能为空。
+- 必须是合法 JSON（标准双引号、无注释、无尾逗号）。
+- commands 必须是数组且非空；每项必须有合法的 hex 和非空 meaning，否则该条被跳过。
+- hex 字节不完整或含非 hex 字符 → 该条报错跳过。
+- 工具会自动规范化 hex：移除非 hex 字符 → 校验偶数位与字节合法性 → 转大写空格分隔。
+- 兼容说明：网站也兼容旧版 "HEX | 含义" 文本格式导入，但 skill 统一输出 JSON。
 
 ## 组包（拼帧）规则
 
@@ -827,54 +1018,59 @@ description: 为串口 HEX 工具网页（hex-serial-tool-web）生成 commands.
 
 ### 校验必须验算
 
-生成的每一帧都要验算校验位，并在 # note: 里写明校验方式。文档有示例帧的优先用文档；没示例的按字段表拼包后务必算校验。
+生成的每一帧都要验算校验位，并在 checksum / note 里写明校验方式。文档有示例帧的优先用文档；没示例的按字段表拼包后务必算校验。
 
 XOR 验算示例（科博达门锁"读取当前时钟"）：
 帧：AA 55 09 00 04 01 02 25 01 8B 02 [校验]
 XOR = AA^55^09^00^04^01^02^25^01^8B^02 = 5C
-最终：AA 55 09 00 04 01 02 25 01 8B 02 5C
+最终 hex：AA 55 09 00 04 01 02 25 01 8B 02 5C
 
 ## 工作流
 
-1. 读协议：用户给协议文档或口述帧结构。提取帧头、长度定义、方向/FuncID、字段表、校验算法、波特率。
+1. 读协议：提取帧头、长度定义、方向/FuncID、字段表、校验算法、波特率、数据位/校验位/停止位。
 2. 列命令清单：把协议里所有命令列出来，每条确定方向。
 3. 拼帧 + 算校验：逐条按字段表拼字节，算校验位。每条都要验算。
-4. 生成 commands.txt：按格式规范输出完整文件。
-5. 交付：把 commands.txt 内容给用户，告诉他导入到 hex-serial-tool-web 工具的命令库（点「导入文件」或「粘贴导入」）。
+4. 生成 commands.json：按上面的 JSON 结构输出，波特率写进 serial.baudRate，校验方式写进 checksum / note。
+5. 交付：把 commands.json 给用户，告诉他导入到 hex-serial-tool-web 工具的命令库（点「导入文件」选 commands.json，或「粘贴导入」贴 JSON）。
 
 ## 生成示例
 
 输入：科博达门锁华住串口协议 V1.2（9600 8N1，XOR 校验）
 
-输出 commands.txt：
+输出 commands.json：
 
-    # Serial Command Table v1
-    # title: 科博达门锁华住串口协议V1.2
-    # source: 华住 门锁与无线模组串口协议V1.2.docx
-    # format: HEX | meaning
-    # baud: 9600
-    # checksum: xor
-    # note: 校验为帧内除校验字节外全部异或
-
-    06 | [链路应答] ACK 校验通过
-    15 | [链路应答] NAK 校验失败
-    18 | [链路应答] CAN 接收方正等待上一包应答
-    AA 55 09 00 04 01 02 25 01 8B 02 5C | [模组下发] 读取当前时钟
-    AA 55 10 00 04 01 09 25 01 8B 01 07 DE 01 01 01 01 01 95 | [模组下发] 设置时钟2014-01-01 01:01:01
-    AA 55 12 00 13 01 09 25 01 8B 03 07 DE 01 01 01 01 01 01 01 82 | [MCU回复] 回复当前时钟
+    {
+      "format": "serial-command-table",
+      "version": 1,
+      "title": "科博达门锁华住串口协议V1.2",
+      "serial": { "baudRate": 9600, "dataBits": 8, "parity": "none", "stopBits": 1 },
+      "checksum": "xor",
+      "note": "校验为帧内除校验字节外全部异或",
+      "commands": [
+        { "hex": "06", "meaning": "[链路应答] ACK 校验通过" },
+        { "hex": "15", "meaning": "[链路应答] NAK 校验失败" },
+        { "hex": "18", "meaning": "[链路应答] CAN 接收方正等待上一包应答" },
+        { "hex": "AA 55 09 00 04 01 02 25 01 8B 02 5C", "meaning": "[模组下发] 读取当前时钟" },
+        { "hex": "AA 55 10 00 04 01 09 25 01 8B 01 07 DE 01 01 01 01 01 95", "meaning": "[模组下发] 设置时钟 2014-01-01 01:01:01" },
+        { "hex": "AA 55 12 00 13 01 09 25 01 8B 03 07 DE 01 01 01 01 01 01 01 82", "meaning": "[MCU回复] 回复当前时钟" }
+      ]
+    }
 
 ## 注意事项
 
+- 必须输出合法 JSON：双引号、无注释、无尾逗号，hex / meaning 都是字符串。
 - 校验是命门：校验位算错，设备不响应或报 NAK。
-- 方向前缀：含义里带 [模组下发]/[MCU回复] 等，便于筛选辨识。
+- 方向前缀：meaning 里带 [模组下发]/[MCU回复] 等，便于辨识。
 - 字节序：多字节字段注意大端/小端。
-- 文档没示例的帧：按字段表拼包后，在含义里标注「（按字段表拼包）」。
+- 波特率：务必写进 serial.baudRate（不是只写在 note），网站才会自动套用。
+- 文档没示例的帧：按字段表拼包后，在 meaning 里标注「（按字段表拼包）」。
 
 ## 目标工具位置
 
 - 网页工具：hex-serial-tool-web（串口 HEX 工具）
-- 导入方式：网页「命令库」面板 → 点「导入文件」选 commands.txt，或「粘贴导入」贴文本。
+- 导入方式：网页「命令库」面板 → 点「导入文件」选 commands.json，或「粘贴导入」贴 JSON 文本。
 `;
+
 // 纯前端下载：从内存 Blob 生成文件，不 fetch 任何外部资源。
 function downloadSkill(){
   const blob = new Blob([SKILL_MD], {type:'text/markdown;charset=utf-8'});
@@ -888,7 +1084,7 @@ function downloadSkill(){
 clearBtn.addEventListener('click', ()=>{
   if(state.entries.length===0){ toast('命令库为空。'); return; }
   if(confirm('清空命令库？')){
-    state.entries=[]; renderCommands();
+    state.entries=[]; state.cmdMeta={title:'',checksum:'',note:''}; renderCommands();
   }
 });
 fillBtn.addEventListener('click', fillSelectedCommand);
@@ -898,9 +1094,8 @@ clearTxBtn.addEventListener('click', ()=>{
   txInput.value=''; state.selectedMeaning='手动输入';
   txCurrent.innerHTML='当前命令: <b>手动输入</b>';
 });
-clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; state.rxFrameBuf=[]; toast('已清空接收区与收发日志。'); });
+clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; if(state.rxRawTimer){clearTimeout(state.rxRawTimer); state.rxRawTimer=null;} state.rxRawBuf=[]; toast('已清空接收区与收发日志。'); });
 exportLogBtn.addEventListener('click', exportTrafficLog);
-rxPauseChk.addEventListener('change', ()=>{ state.paused = rxPauseChk.checked; });
 
 // Ctrl+Enter 发送，Ctrl+F 搜索（全局）
 document.addEventListener('keydown', ev=>{
@@ -921,12 +1116,17 @@ function handleFileImport(ev){
   reader.readAsText(file, 'utf-8');
 }
 function applyImport(text){
-  const {entries, errors, baud} = parseCommandTable(text);
+  // 自动识别：以 { 或 [ 开头按 JSON 解析；否则兼容旧版 HEX | 含义 文本格式
+  const trimmed = text.trim();
+  const isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+  const result = isJson ? parseCommandJson(text) : (()=>{ const r=parseCommandTable(text); return {entries:r.entries, errors:r.errors, baud:r.baud, meta:{title:'',checksum:'',note:''}}; })();
+  const {entries, errors, baud, meta} = result;
   if(entries.length===0){
-    const msg = errors.length ? ('导入失败：\n'+errors.slice(0,8).join('\n')) : '未解析到有效命令，请检查格式是否为: HEX | 含义';
+    const msg = errors.length ? ('导入失败：\n'+errors.slice(0,8).join('\n')) : '未解析到有效命令，请检查是否为 JSON 格式（含 commands 数组）';
     toast(msg,'err'); return;
   }
   state.entries = entries;
+  state.cmdMeta = meta || {title:'',checksum:'',note:''};
   renderCommands();
   // 命令表声明了波特率 → 自动切换下拉框（已连接时不改，避免冲突）
   let msg = '已导入 '+entries.length+' 条命令。';
@@ -944,7 +1144,7 @@ function applyImport(text){
       msg += ' 波特率已设为 '+baud+'（新增选项）。';
     }
   }
-  if(errors.length) msg += '（另有 '+errors.length+' 行被跳过）';
+  if(errors.length) msg += '（另有 '+errors.length+' 条被跳过）';
   toast(msg,'ok');
   if(errors.length) console.log('[命令表导入] 被跳过的行：\n'+errors.join('\n'));
 }
@@ -966,24 +1166,24 @@ pasteModal.addEventListener('click', e=>{ if(e.target===pasteModal) closePasteMo
 const exportModal=$('exportModal'), exportTitle=$('exportTitle'), exportText=$('exportText');
 function openExportModal(){
   if(state.entries.length===0){ toast('命令库为空，无可导出内容。'); return; }
-  exportTitle.value='';
-  exportText.value = formatCommandTable(state.entries, '');
+  exportTitle.value = (state.cmdMeta && state.cmdMeta.title) || '';
+  exportText.value = formatCommandJson(state.entries, exportTitle.value);
   exportModal.classList.add('open');
 }
 function closeExportModal(){ exportModal.classList.remove('open'); }
-function refreshExportText(){ exportText.value = formatCommandTable(state.entries, exportTitle.value); }
+function refreshExportText(){ exportText.value = formatCommandJson(state.entries, exportTitle.value); }
 $('exportCloseBtn').addEventListener('click', closeExportModal);
 $('exportCancelBtn').addEventListener('click', closeExportModal);
 exportTitle.addEventListener('input', refreshExportText);
 $('exportDownloadBtn').addEventListener('click', ()=>{
   refreshExportText();
-  const blob = new Blob([exportText.value], {type:'text/plain;charset=utf-8'});
+  const blob = new Blob([exportText.value], {type:'application/json;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = (exportTitle.value.trim()||'commands')+'.txt';
+  a.download = (exportTitle.value.trim()||'commands')+'.json';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
-  toast('已导出到文件。','ok');
+  toast('已导出 JSON。','ok');
 });
 $('exportCopyBtn').addEventListener('click', async ()=>{
   refreshExportText();
@@ -994,6 +1194,7 @@ exportModal.addEventListener('click', e=>{ if(e.target===exportModal) closeExpor
 
 /* ---------- 初始化 ---------- */
 async function init(){
+  setTxMode('hex');          // 默认 HEX 发送
   updateCounters();
   renderCommands();
   if(serialSupported) refreshPorts();
