@@ -180,6 +180,11 @@ html.dark .cmd-item .hex{color:#fda4af}
 
 /* ---------- 终端（接收/发送） ---------- */
 .term-toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; flex:0 0 auto}
+/* 接收区搜索 */
+.term-search{display:flex; gap:8px; align-items:center; margin-bottom:10px; flex:0 0 auto; flex-wrap:wrap}
+.term-search input[type=text]{flex:1; min-width:140px}
+.search-count{color:var(--muted-fg); font-size:.78rem; white-space:nowrap; font-variant-numeric:tabular-nums}
+.term-rx mark.hl{background:#f59e0b; color:#141414; border-radius:2px; padding:0 1px}
 .term-spacer{flex:1}
 .term{
   background:var(--term-bg); color:var(--term-fg); border:1px solid var(--border); border-radius:var(--radius);
@@ -315,6 +320,11 @@ code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-size:.85e
         <button type="button" class="btn" id="exportLogBtn">导出日志</button>
         <button type="button" class="btn btn-danger" id="clearRxBtn">清空接收</button>
       </div>
+      <div class="term-search">
+        <input type="text" id="rxSearch" placeholder="搜索接收内容…（HEX / ASCII / 含义 / 时间）">
+        <button type="button" class="toggle" id="rxOnlyMatchBtn" aria-pressed="false" title="开启后接收区只显示命中搜索词的行"><span class="dot"></span>仅显示匹配</button>
+        <span class="search-count" id="rxSearchCount"></span>
+      </div>
       <div class="term term-rx" id="rxTerm"></div>
     </section>
   </div>
@@ -331,6 +341,10 @@ code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-size:.85e
       </div>
       <button type="button" class="btn btn-primary" id="sendBtn">发送 HEX</button>
       <button type="button" class="btn" id="clearTxBtn">清空发送</button>
+      <button type="button" class="toggle" id="loopBtn" aria-pressed="false" title="按当前发送区内容与格式（HEX/ASCII）循环发送；断开串口或发送失败会自动停止"><span class="dot"></span>循环发送</button>
+      <span class="lbl">间隔</span>
+      <input type="number" id="loopInterval" value="1000" min="50" step="50" style="width:86px">
+      <span class="lbl">ms</span>
       <span class="term-spacer"></span>
       <div class="tx-meter">
         <span>Tx: <b id="meterTx">0</b> B</span>
@@ -563,9 +577,11 @@ const cmdList=$('cmdList'), cmdCount=$('cmdCount'), cmdCountPill=$('cmdCountPill
 const importBtn=$('importBtn'), pasteBtn=$('pasteBtn'), exportBtn=$('exportBtn'), clearBtn=$('clearBtn'), fileInput=$('fileInput'), skillBtn=$('skillBtn');
 const fillBtn=$('fillBtn'), sendSelBtn=$('sendSelBtn');
 const rxTerm=$('rxTerm'), clearRxBtn=$('clearRxBtn'), exportLogBtn=$('exportLogBtn');
+const rxSearch=$('rxSearch'), rxSearchCount=$('rxSearchCount');
 const meterTx=$('meterTx'), meterRx=$('meterRx');
 const txInput=$('txInput'), txCurrent=$('txCurrent'), sendBtn=$('sendBtn'), clearTxBtn=$('clearTxBtn');
 const txHexMode=$('txHexMode'), txAsciiMode=$('txAsciiMode');
+const loopBtn=$('loopBtn'), loopInterval=$('loopInterval');
 const toastEl=$('toast');
 
 /* ---------- 接收区显示选项（toggle 按钮，功能等价原 checkbox） ---------- */
@@ -581,6 +597,7 @@ function bindToggle(id, onChange){
 }
 bindToggle('rxHexBtn');   bindToggle('rxAsciiBtn');   bindToggle('rxTsBtn');
 bindToggle('rxPauseBtn', on=>{ state.paused = on; });
+bindToggle('rxOnlyMatchBtn', ()=>{ applyRxSearch(); });
 
 /* ---------- toast ---------- */
 let toastTimer=null;
@@ -693,18 +710,18 @@ function sendSelectedCommand(){   // 直接发送 = 先填后发
   fillSelectedCommand();
   if(selectedEntry()) sendHex();
 }
-async function sendHex(){   // 按 txMode 分流：HEX 解析十六进制；ASCII 按 UTF-8 编码原文发送
+async function sendHex(){   // 按 txMode 分流：HEX 解析十六进制；ASCII 按 UTF-8 编码原文发送。返回是否成功（供循环发送判断停不停）
   if(!state.connected || !state.port){
-    toast('请先打开串口。','err'); return;
+    toast('请先打开串口。','err'); return false;
   }
   let payload;
   if(state.txMode === 'ascii'){
     const text = txInput.value;
-    if(text === ''){ toast('发送内容不能为空。','err'); return; }
+    if(text === ''){ toast('发送内容不能为空。','err'); return false; }
     payload = new TextEncoder().encode(text);   // ASCII 字符即单字节；中文等多字节按 UTF-8
   }else{
     try { payload = parseHexInput(txInput.value); }
-    catch(e){ toast('HEX 格式错误：'+e.message,'err'); return; }
+    catch(e){ toast('HEX 格式错误：'+e.message,'err'); return false; }
   }
   try{
     const writer = state.port.writable.getWriter();
@@ -713,12 +730,36 @@ async function sendHex(){   // 按 txMode 分流：HEX 解析十六进制；ASCI
   }catch(err){
     toast('发送失败：'+err.message,'err');
     await disconnect(true);
-    return;
+    return false;
   }
   state.txTotal += payload.length;
   appendTxLog(payload);
   updateCounters();
+  return true;
 }
+
+/* ---------- 循环发送（可设间隔） ---------- */
+let loopTimer = null;
+function stopLoop(){
+  if(loopTimer){ clearInterval(loopTimer); loopTimer = null; }
+  loopBtn.classList.remove('on');
+  loopBtn.setAttribute('aria-pressed', 'false');
+}
+function startLoop(){
+  if(!state.connected || !state.port){ toast('请先打开串口。','err'); return; }
+  const ms = Math.max(50, Number(loopInterval.value) || 1000);
+  loopInterval.value = String(ms);                 // 规范化回写（过小自动抬到 50）
+  loopBtn.classList.add('on');
+  loopBtn.setAttribute('aria-pressed', 'true');
+  sendHex();                                       // 立即先发一次
+  loopTimer = setInterval(async ()=>{
+    if(!state.connected || !state.port){ stopLoop(); toast('串口已断开，循环发送停止。','err'); return; }
+    const ok = await sendHex();
+    if(!ok){ stopLoop(); toast('循环发送已停止：发送失败或内容无效。','err'); }
+  }, ms);
+  toast('循环发送：每 '+ms+' ms 发送一次');
+}
+loopBtn.addEventListener('click', ()=>{ loopTimer ? stopLoop() : startLoop(); });
 function appendTxLog(payload){
   // 写入完整收发日志（不受显示选项影响，含 HEX + ASCII）
   logTraffic('TX', payload);
@@ -778,10 +819,53 @@ function renderRxFrame(data){
 function rxTermAppend(text, dir){
   const span=document.createElement('span');
   span.className='rxline '+(dir==='TX'?'tx':'rx');
-  span.textContent=text+'\n';
+  span.dataset.text = text;          // 存原始行文本，搜索时按它高亮/过滤
+  rxApplyLineToSpan(span);
   rxTerm.appendChild(span);
   rxTerm.scrollTop = rxTerm.scrollHeight;
 }
+/* ---------- 接收区搜索 / 高亮 ---------- */
+// 按当前搜索词渲染一行：命中部分用 <mark class="hl"> 包起来；开了「仅显示匹配」时未命中行隐藏
+function rxApplyLineToSpan(span){
+  const text = span.dataset.text || '';
+  const q = (typeof rxSearch !== 'undefined' && rxSearch) ? rxSearch.value.trim() : '';
+  if(!q){
+    span.style.display = '';
+    span.textContent = text+'\n';
+    return;
+  }
+  const lower = text.toLowerCase(), lq = q.toLowerCase();
+  if(!lower.includes(lq)){
+    span.style.display = isOn('rxOnlyMatchBtn') ? 'none' : '';
+    span.textContent = text+'\n';
+    return;
+  }
+  span.style.display = '';
+  let html = '', i = 0, idx;
+  while(lq && (idx = lower.indexOf(lq, i)) !== -1){
+    html += escapeHtml(text.slice(i, idx))
+         + '<mark class="hl">' + escapeHtml(text.slice(idx, idx+lq.length)) + '</mark>';
+    i = idx + lq.length;
+  }
+  html += escapeHtml(text.slice(i));
+  span.innerHTML = html + '\n';
+}
+// 搜索词变化 / 过滤开关切换 -> 重渲染全部行 + 更新匹配计数
+function applyRxSearch(){
+  const q = (rxSearch.value||'').trim();
+  const lq = q.toLowerCase();
+  let count = 0;
+  rxTerm.querySelectorAll('.rxline').forEach(sp=>{
+    rxApplyLineToSpan(sp);
+    if(q && (sp.dataset.text||'').toLowerCase().includes(lq)) count++;
+  });
+  rxSearchCount.textContent = q ? (count+' 条匹配') : '';
+}
+let rxSearchTimer = null;
+rxSearch.addEventListener('input', ()=>{
+  clearTimeout(rxSearchTimer);
+  rxSearchTimer = setTimeout(applyRxSearch, 150);   // 防抖：长日志逐字输入不卡
+});
 
 /* ---------- 完整收发日志（打印所有 TX/RX） ---------- */
 // 无论显示选项如何（含"暂停接收显示"），实际收发的数据都完整留存
@@ -919,6 +1003,7 @@ async function startReader(){
 }
 async function disconnect(silent){
   if(!state.port){ return; }
+  stopLoop();   // 断开串口时停止循环发送
   state.keepReading = false;
   try{ if(state.reader){ await state.reader.cancel(); } }catch(e){}
   try{ if(state.reader){ state.reader.releaseLock(); } }catch(e){}
@@ -1094,7 +1179,7 @@ clearTxBtn.addEventListener('click', ()=>{
   txInput.value=''; state.selectedMeaning='手动输入';
   txCurrent.innerHTML='当前命令: <b>手动输入</b>';
 });
-clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; if(state.rxRawTimer){clearTimeout(state.rxRawTimer); state.rxRawTimer=null;} state.rxRawBuf=[]; toast('已清空接收区与收发日志。'); });
+clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; rxSearchCount.textContent=''; if(state.rxRawTimer){clearTimeout(state.rxRawTimer); state.rxRawTimer=null;} state.rxRawBuf=[]; toast('已清空接收区与收发日志。'); });
 exportLogBtn.addEventListener('click', exportTrafficLog);
 
 // Ctrl+Enter 发送，Ctrl+F 搜索（全局）
