@@ -129,6 +129,10 @@ input:focus,select:focus,textarea:focus{border-color:var(--ring); box-shadow:0 0
 .btn-ghost{background:transparent; border-color:transparent; color:var(--muted-fg)}
 .btn-ghost:hover:not(:disabled){background:var(--secondary); color:var(--fg)}
 
+/* 判定模式拉条 */
+input[type=range]{padding:0; background:transparent; border:none; accent-color:var(--fg); width:110px; cursor:pointer}
+.judge-val{font-variant-numeric:tabular-nums; min-width:56px; text-align:right}
+
 /* toggle pill（对齐参考站的 接收:HEX / 自动滚动 切换按钮） */
 .toggle{
   background:var(--secondary); color:var(--muted-fg);
@@ -195,6 +199,8 @@ html.dark .cmd-item .hex{color:#fda4af}
 .term-rx .rxline{display:block}
 .term-rx .rxline.tx{color:var(--tx)}
 .term-rx .rxline.rx{color:var(--rx)}
+.term-rx .rxline.jd-pass{color:var(--rx); font-weight:650}
+.term-rx .rxline.jd-fail{color:var(--destructive); font-weight:650}
 .term-tx{width:100%; height:92px; resize:vertical; white-space:pre; color:var(--fg); background:var(--bg)}
 .tx-current{color:var(--muted-fg); font-size:.82rem; margin-bottom:7px}
 .tx-current b{color:var(--fg); font-weight:600}
@@ -316,6 +322,10 @@ code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-size:.85e
         <button type="button" class="toggle" id="rxAsciiBtn" aria-pressed="false"><span class="dot"></span>ASCII</button>
         <button type="button" class="toggle on" id="rxTsBtn" aria-pressed="true"><span class="dot"></span>时间戳</button>
         <button type="button" class="toggle" id="rxPauseBtn" aria-pressed="false"><span class="dot"></span>暂停显示</button>
+        <button type="button" class="toggle" id="judgeBtn" aria-pressed="false" title="开启后：发送带 expect（期望回复）的命令时，在超时窗口内匹配接收数据，PASS/FAIL 直接显示在接收区"><span class="dot"></span>判定模式</button>
+        <span class="lbl" id="judgeTimeoutLbl" title="发送后等待期望回复的超时时间，可拖动调整">超时</span>
+        <input type="range" id="judgeTimeout" min="100" max="5000" step="100" value="500">
+        <span class="judge-val" id="judgeTimeoutVal">500ms</span>
         <div class="term-spacer"></div>
         <button type="button" class="btn" id="exportLogBtn">导出日志</button>
         <button type="button" class="btn btn-danger" id="clearRxBtn">清空接收</button>
@@ -522,7 +532,14 @@ function parseCommandJson(text){
     let hexText;
     try { hexText = normalizeHexText(String(c.hex==null?'':c.hex)); }
     catch(e){ errors.push('第 '+(i+1)+' 条 HEX 无效：'+e.message); return; }
-    entries.push({hexText, meaning});
+    // expect（期望回复）为可选字段：支持 * （任意长度字节）与 --（任意单字节）通配
+    let expect = '';
+    if(c.expect != null && String(c.expect).trim() !== ''){
+      const expErr = validateExpect(String(c.expect));
+      if(expErr){ errors.push('第 '+(i+1)+' 条 expect 无效（已忽略）：'+expErr); }
+      else { expect = String(c.expect).trim(); }
+    }
+    entries.push({hexText, meaning, expect});
   });
   let baud = null;
   if(obj.serial && Number(obj.serial.baudRate) > 0) baud = Number(obj.serial.baudRate);
@@ -543,7 +560,11 @@ function formatCommandJson(entries, title){
   obj.serial = { baudRate:baud, dataBits:8, parity:'none', stopBits:1 };
   if(meta.checksum) obj.checksum = meta.checksum;
   if(meta.note) obj.note = meta.note;
-  obj.commands = entries.map(e=>({hex:e.hexText, meaning:e.meaning}));
+  obj.commands = entries.map(e=>{
+    const c = {hex:e.hexText, meaning:e.meaning};
+    if(e.expect) c.expect = e.expect;   // 有期望回复才导出，保持 JSON 干净
+    return c;
+  });
   return JSON.stringify(obj, null, 2);
 }
 
@@ -567,6 +588,12 @@ const state = {
   rxRawTimer: null,     // 原始流空闲 flush 定时器
   txMode: 'hex',        // 发送格式：'hex' | 'ascii'（默认 hex）
   cmdMeta: {title:'', checksum:'', note:''},  // 导入命令表的元信息（导出时回写，保证往返一致）
+  judge: {
+    enabled: false,         // 判定模式开关
+    timeoutMs: 500,         // 期望回复超时（拉条控制）
+    active: null,           // 当前待判定的监听窗口 {expectTok, sentAt, timer, meaning}
+    stats: {sent:0, pass:0, fail:0},  // 判定统计
+  },
 };
 
 /* ---------- DOM ---------- */
@@ -598,6 +625,34 @@ function bindToggle(id, onChange){
 bindToggle('rxHexBtn');   bindToggle('rxAsciiBtn');   bindToggle('rxTsBtn');
 bindToggle('rxPauseBtn', on=>{ state.paused = on; });
 bindToggle('rxOnlyMatchBtn', ()=>{ applyRxSearch(); });
+
+/* ---------- 判定模式：开关 + 超时拉条 ---------- */
+const judgeBtn=$('judgeBtn'), judgeTimeout=$('judgeTimeout'), judgeTimeoutVal=$('judgeTimeoutVal');
+(function initJudgeUI(){
+  // 拉条初值：记忆上次设置
+  try{
+    const saved = Number(localStorage.getItem('serial-judge-timeout'));
+    if(saved >= 100 && saved <= 5000){ judgeTimeout.value = String(saved); }
+  }catch(e){}
+  state.judge.timeoutMs = Number(judgeTimeout.value);
+  judgeTimeoutVal.textContent = state.judge.timeoutMs + 'ms';
+  judgeTimeout.addEventListener('input', ()=>{
+    state.judge.timeoutMs = Number(judgeTimeout.value);
+    judgeTimeoutVal.textContent = state.judge.timeoutMs + 'ms';
+    try{ localStorage.setItem('serial-judge-timeout', String(state.judge.timeoutMs)); }catch(e){}
+  });
+  judgeBtn.addEventListener('click', ()=>{
+    state.judge.enabled = !state.judge.enabled;
+    judgeBtn.classList.toggle('on', state.judge.enabled);
+    judgeBtn.setAttribute('aria-pressed', String(state.judge.enabled));
+    if(state.judge.enabled){
+      toast('判定模式已开启：发送带 expect 的命令将自动匹配回复（超时 '+state.judge.timeoutMs+'ms）。');
+    }else{
+      judgeCancelActive('判定模式关闭');
+      toast('判定模式已关闭。');
+    }
+  });
+})();
 
 /* ---------- toast ---------- */
 let toastTimer=null;
@@ -734,8 +789,18 @@ async function sendHex(){   // 按 txMode 分流：HEX 解析十六进制；ASCI
   }
   state.txTotal += payload.length;
   appendTxLog(payload);
+  judgeOnSend(currentJudgeEntry(), formatHex(payload));   // 判定模式：发送后挂 expect 监听
   updateCounters();
   return true;
+}
+// 判定用的命令项：发送区内容对应命令库选中项（或最近填入的命令）时取其 expect
+function currentJudgeEntry(){
+  const e = selectedEntry();
+  if(e && e.expect) return e;
+  // 也支持手动填入：若发送区 hex 与某条命令一致，用那条的 expect
+  const norm = (()=>{ try{ return normalizeHexText(txInput.value); }catch(_){ return ''; } })();
+  if(norm) return state.entries.find(en => en.hexText === norm && en.expect) || null;
+  return null;
 }
 
 /* ---------- 循环发送（可设间隔） ---------- */
@@ -803,6 +868,7 @@ function flushRxRaw(){
   const data = new Uint8Array(state.rxRawBuf);
   state.rxRawBuf = [];
   logTraffic('RX', data);
+  judgeOnRxFrame(data);      // 判定模式：合并帧到达时尝试匹配 expect
   renderRxFrame(data);
 }
 function renderRxFrame(data){
@@ -818,7 +884,8 @@ function renderRxFrame(data){
 }
 function rxTermAppend(text, dir){
   const span=document.createElement('span');
-  span.className='rxline '+(dir==='TX'?'tx':'rx');
+  const cls = dir==='TX' ? 'tx' : dir==='JD-PASS' ? 'jd-pass' : dir==='JD-FAIL' ? 'jd-fail' : 'rx';
+  span.className='rxline '+cls;
   span.dataset.text = text;          // 存原始行文本，搜索时按它高亮/过滤
   rxApplyLineToSpan(span);
   rxTerm.appendChild(span);
@@ -867,7 +934,107 @@ rxSearch.addEventListener('input', ()=>{
   rxSearchTimer = setTimeout(applyRxSearch, 150);   // 防抖：长日志逐字输入不卡
 });
 
-/* ---------- 完整收发日志（打印所有 TX/RX） ---------- */
+/* ---------- 判定模式：expect 匹配引擎 ---------- */
+// expect 语法：hex 字节序列，支持 * (任意长度字节，含 0 字节) 和 -- (任意单字节)
+// 例: "AA 55 -- 00 13 *" = 帧头 AA 55 + 任意 1 字节 + 00 13 + 任意尾巴
+// 校验：除 * / -- / hex 字符 / 空格外不得有其他内容；返回 null 表示合法
+function validateExpect(text){
+  const cleaned = text.replace(/[\s]/g,'');
+  if(!cleaned) return 'expect 为空';
+  // 按 * 和 -- 切开，剩余每段必须是偶数位 hex
+  const parts = cleaned.split(/(\*|--)/);
+  for(const p of parts){
+    if(p === '' || p === '*' || p === '--') continue;
+    if(!/^[0-9A-Fa-f]+$/.test(p)) return '含非 hex/通配符字符: '+p;
+    if(p.length % 2 !== 0) return 'hex 位不完整: '+p;
+  }
+  return null;
+}
+// 把 expect 文本解析成 token 序列: ['AA','55','ANY1','0013','ANY']
+// 其中 ANY1=单字节通配(--), ANY=任意长度通配(*)
+function parseExpect(text){
+  const cleaned = text.replace(/[\s]/g,'');
+  const tokens = [];
+  let i = 0;
+  while(i < cleaned.length){
+    if(cleaned[i] === '*'){ tokens.push('ANY'); i += 1; }
+    else if(cleaned[i]+cleaned[i+1] === '--'){ tokens.push('ANY1'); i += 2; }
+    else { tokens.push(cleaned.slice(i,i+2).toUpperCase()); i += 2; }
+  }
+  return tokens;
+}
+// 检查完整帧是否匹配 token 序列（帧 = 本次判定窗口内累计收到的全部字节）
+function matchExpect(tokens, bytes){
+  // 经典双序列匹配（类似 glob）：pos=当前 token 下标, j=当前字节下标
+  let pos = 0, j = 0, starTok = -1, starJ = 0;
+  while(j < bytes.length){
+    if(pos < tokens.length && tokens[pos] === 'ANY1'){ pos++; j++; }              // 单字节通配吃掉一个字节
+    else if(pos < tokens.length && tokens[pos] === 'ANY'){                        // 记录回溯点，先尝试吃 0 字节
+      starTok = pos; starJ = j; pos++;
+    }
+    else if(pos < tokens.length && tokens[pos] === fmtB(bytes[j])){ pos++; j++; } // 精确字节命中
+    else if(starTok >= 0){ pos = starTok + 1; j = ++starJ; }                      // 失配回溯：* 多吃一个字节
+    else return false;
+  }
+  while(pos < tokens.length && tokens[pos] === 'ANY') pos++;  // 尾部 * 可匹配空
+  return pos === tokens.length;
+}
+function fmtB(b){ return b.toString(16).toUpperCase().padStart(2,'0'); }
+// 调试用：token 序列转可读串
+function expectTokensToStr(tokens){ return tokens.map(t=>t==='ANY'?'*':(t==='ANY1'?'--':t)).join(' '); }
+
+/* ---------- 判定模式：发送后挂监听 / RX 到达检查 / 超时判 FAIL ---------- */
+function judgeOnSend(entry, hexText){
+  const J = state.judge;
+  if(!J.enabled) return;
+  if(!entry || !entry.expect){ return; }        // 判定模式开着但该命令无 expect：不判定
+  judgeCancelActive('被新判定覆盖');             // 同一时间只保留一个监听窗口
+  const tokens = parseExpect(entry.expect);
+  const act = { tokens, sentAt: performance.now(), meaning: entry.meaning, expect: entry.expect, timer: null };
+  act.timer = setTimeout(()=>{
+    // 超时未匹配 -> FAIL
+    J.active = null;
+    J.stats.sent++; J.stats.fail++;
+    judgeRender(false, null, entry.meaning, entry.expect, J.timeoutMs);
+  }, J.timeoutMs);
+  J.active = act;
+  J.stats.pending = true;
+}
+// 每个合并后的 RX 帧到达时调用（appendRxRaw -> flushRxRaw -> 这里）
+function judgeOnRxFrame(data){
+  const act = state.judge.active;
+  if(!act) return;
+  // 把本次窗口累计字节（从发送时刻起）与 expect 匹配
+  // 简化实现：直接用当前帧 + 之前未 match 的累积缓冲（窗口期内逐帧拼接尝试）
+  act.buf = act.buf || [];
+  for(let i=0;i<data.length;i++) act.buf.push(data[i]);
+  if(matchExpect(act.tokens, act.buf)){
+    clearTimeout(act.timer);
+    state.judge.active = null;
+    state.judge.stats.sent++; state.judge.stats.pass++;
+    const ms = Math.round(performance.now() - act.sentAt);
+    judgeRender(true, ms, act.meaning, act.expect, null);
+  }
+  // 未匹配：继续等下一帧或超时
+}
+// 取消当前监听（不计数）：新判定覆盖 / 用户关判定模式 / 断开串口
+function judgeCancelActive(reason){
+  const act = state.judge.active;
+  if(!act) return;
+  clearTimeout(act.timer);
+  state.judge.active = null;
+  if(reason) console.log('[判定] 监听取消: '+reason);
+}
+// 判定结果渲染到接收区
+function judgeRender(pass, ms, meaning, expect, timeoutMs){
+  const prefix = isOn('rxTsBtn') ? timestampPrefix() : '';
+  const line = pass
+    ? prefix+'✅ PASS  '+meaning+'  (回复耗时 '+ms+'ms, 期望: '+expect+')'
+    : prefix+'❌ FAIL  '+meaning+'  (超时 '+timeoutMs+'ms 未收到期望回复: '+expect+')';
+  rxTermAppend(line, pass ? 'JD-PASS' : 'JD-FAIL');
+}
+
+
 // 无论显示选项如何（含"暂停接收显示"），实际收发的数据都完整留存
 function logTraffic(dir, data){
   const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -893,6 +1060,10 @@ function buildTrafficLogText(){
   out.push('# 导出时间: '+new Date().toLocaleString());
   out.push('# 连接: '+state.baseStatus);
   out.push('# TX '+txCount+' 包 / '+txBytes+' 字节    RX '+rxCount+' 包 / '+rxBytes+' 字节    共 '+L.length+' 条');
+  const J = state.judge.stats;
+  if(J.sent > 0){
+    out.push('# 判定: 发送判定 '+J.sent+' 条 / 通过 '+J.pass+' / 超时 '+J.fail+(J.sent===J.pass?'  [全部通过]':'  [存在失败]'));
+  }
   out.push('# 列: [时间戳] 方向 HEX');
   out.push('');
   L.forEach(r=>{
@@ -1004,6 +1175,7 @@ async function startReader(){
 async function disconnect(silent){
   if(!state.port){ return; }
   stopLoop();   // 断开串口时停止循环发送
+  judgeCancelActive('串口断开');   // 判定监听随断开取消
   state.keepReading = false;
   try{ if(state.reader){ await state.reader.cancel(); } }catch(e){}
   try{ if(state.reader){ state.reader.releaseLock(); } }catch(e){}
@@ -1077,6 +1249,7 @@ description: 为串口 HEX 工具网页（hex-serial-tool-web）生成 JSON 格�
 - commands：命令数组，不能为空。
 - commands[].hex：HEX 字节串，字节用空格分隔，每字节 2 位十六进制（AA 55 09…）。大小写不限（工具会规范化为大写）。只能含 0-9 A-F 和空格。
 - commands[].meaning：含义（人话描述）。建议带方向前缀：[模组下发]/[MCU回复]/[MCU主动上报]/[链路应答]。不能为空。
+- commands[].expect（可选）：期望回复，用于网站「判定模式」自动判 PASS/FAIL。写法：hex 字节序列，支持 * （任意长度字节）和 -- （任意单字节）通配。例：{ "hex":"AA 55 09 00 04 01 02 25 01 8B 02 5C", "meaning":"[模组下发] 读取当前时钟", "expect":"AA 55 -- 00 13 *" }。超时时间由网站上的拉条现场调整，不写在 JSON 里。仅对"下发→等回复"型命令有意义；上报/应答类命令可不写。
 
 ### 解析规则（生成时必须满足）
 
@@ -1179,7 +1352,7 @@ clearTxBtn.addEventListener('click', ()=>{
   txInput.value=''; state.selectedMeaning='手动输入';
   txCurrent.innerHTML='当前命令: <b>手动输入</b>';
 });
-clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; rxSearchCount.textContent=''; if(state.rxRawTimer){clearTimeout(state.rxRawTimer); state.rxRawTimer=null;} state.rxRawBuf=[]; toast('已清空接收区与收发日志。'); });
+clearRxBtn.addEventListener('click', ()=>{ rxTerm.textContent=''; state.trafficLog=[]; rxSearchCount.textContent=''; if(state.rxRawTimer){clearTimeout(state.rxRawTimer); state.rxRawTimer=null;} state.rxRawBuf=[]; state.judge.stats={sent:0,pass:0,fail:0}; judgeCancelActive(); toast('已清空接收区与收发日志。'); });
 exportLogBtn.addEventListener('click', exportTrafficLog);
 
 // Ctrl+Enter 发送，Ctrl+F 搜索（全局）
